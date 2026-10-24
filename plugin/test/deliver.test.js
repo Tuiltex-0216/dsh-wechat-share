@@ -45,8 +45,8 @@ test("deliverBatch_happyPath_contentShape", async () => {
         },
       },
       sessionController: {
-        async prompt(req) {
-          calls.prompts.push(req);
+        async prompt(req, signal) {
+          calls.prompts.push({ req, signal });
           return { accepted: true };
         },
       },
@@ -54,11 +54,14 @@ test("deliverBatch_happyPath_contentShape", async () => {
     const result = await deliverBatch({ batch, sessionId: "sess-1", services, onLog: () => {} });
     assert.equal(result.ok, true);
     assert.match(result.requestId, /^[0-9a-f-]{36}$/);
+    // the host prompt() dereferences signal.throwIfAborted() unguarded —
+    // a real AbortSignal is mandatory (production bug: undefined signal)
+    assert.ok(calls.prompts[0].signal instanceof AbortSignal, "prompt signal must be an AbortSignal");
     assert.equal(calls.uploads.length, 2);
     assert.equal(calls.uploads[0].name, "聊天记录.zip");
     assert.equal(calls.uploads[1].name, "附件.zip");
     assert.equal(calls.prompts.length, 1);
-    const p = calls.prompts[0];
+    const p = calls.prompts[0].req;
     assert.equal(p.sessionId, "sess-1");
     assert.equal(p.mode, "queue");
     assert.equal(p.requestId, result.requestId);

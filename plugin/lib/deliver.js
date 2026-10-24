@@ -95,9 +95,13 @@ export async function deliverBatch({ batch, sessionId, services, onLog = () => {
   const requestId = randomUUID();
   const content = [{ type: "text", text: buildPromptText(batch) }, ...fileParts];
   try {
+    // The host prompt() dereferences signal.throwIfAborted() unguarded —
+    // a real AbortSignal is mandatory (undefined crashes with
+    // "Cannot read properties of undefined (reading 'throwIfAborted')").
+    const ac = new AbortController();
     const res = await services.sessionController.prompt(
       { requestId, sessionId, mode: "queue", content },
-      undefined // signal
+      ac.signal
     );
     if (res && res.accepted === false) {
       throw new DeliverError("gateway/internal", "prompt not accepted");
