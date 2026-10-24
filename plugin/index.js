@@ -125,6 +125,7 @@ export function apply(ctx, config = {}) {
       meta = {
         title: typeof rows.title?.val === "string" && rows.title.val.length > 0 ? rows.title.val : undefined,
         lastPromptAt: rows.sessionListMetadata?.val?.lastPromptAt ?? undefined,
+        blank: rows.sessionListMetadata?.val?.blank === true ? true : undefined,
       };
     } catch {
       meta = { missing: true };
@@ -150,20 +151,24 @@ export function apply(ctx, config = {}) {
           .map((id) => {
             const s = byId[id] ?? {};
             const pm = sessionProjMeta(id);
-            const title =
-              (typeof s.title === "string" && s.title.length > 0 && s.title) ||
-              pm.title ||
-              id.slice(-12);
+            const liveTitle = typeof s.title === "string" && s.title.length > 0 ? s.title : undefined;
+            const title = liveTitle || pm.title;
             return {
               id,
-              title,
+              // blank sessions without any title are hidden (GUI sidebar
+              // parity — cold empty sessions have no conversation to deliver
+              // into and no label to show); a titled session is always kept.
+              hidden: !title && (s.blank === true || pm.blank === true),
+              title: title || id.slice(-12),
               cwd: s.cwd ?? "",
               // projcache lastPromptAt is the GUI sidebar's recency source
               // (the "N 小时前" labels); prefer it over the live snapshot.
               updatedAt: pm.lastPromptAt ?? s.updatedAt ?? s.lastPromptAt ?? null,
               running: !!s.running,
             };
-          });
+          })
+          .filter((s) => !s.hidden)
+          .map(({ hidden, ...rest }) => rest);
         // most recently active session first (updatedAt desc, nulls last)
         sessions.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
         return {

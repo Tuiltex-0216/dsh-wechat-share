@@ -14,6 +14,8 @@ const { apply, name, inject, defaultInboxRoot } = mod;
 const ID_A = "session-aaaa1111-2222-3333-4444-555566667777";
 const ID_B = "session-bbbb1111-2222-3333-4444-555566667777";
 const ID_C = "session-cccc1111-2222-3333-4444-555566667777";
+const ID_D = "session-dddd1111-2222-3333-4444-555566667777";
+const ID_E = "session-eeee1111-2222-3333-4444-555566667777";
 
 // Workspace-local temp (the DSH sandbox confines node writes to the
 // session workspace; os.tmpdir() is outside it).
@@ -67,7 +69,7 @@ async function makeCtx(root, { withWebServer = true, deliverServices = null, dsh
       workspaceId: "ws-two",
       path: "C:\\ws\\two",
       title: "two",
-      sessionIds: [ID_C],
+      sessionIds: [ID_C, ID_D, ID_E],
       createdAt: "2026-10-21T00:00:00Z",
       updatedAt: "2026-10-24T03:00:00Z",
     },
@@ -83,6 +85,10 @@ async function makeCtx(root, { withWebServer = true, deliverServices = null, dsh
           [ID_B]: { sessionId: ID_B, cwd: "C:\\ws\\one\\b", updatedAt: 1761409200000, running: true, blank: false },
           // ID_C: no title in the snapshot (fallback path)
           [ID_C]: { sessionId: ID_C, cwd: "C:\\ws\\two\\c", updatedAt: 1761412800000, running: false, blank: false },
+          // ID_D: blank, no title anywhere → must be HIDDEN (GUI does the same)
+          [ID_D]: { sessionId: ID_D, cwd: "C:\\ws\\two\\d", updatedAt: 1761413000000, running: false, blank: true },
+          // ID_E: blank flag but HAS a title → kept (friendly label wins)
+          [ID_E]: { sessionId: ID_E, cwd: "C:\\ws\\two\\e", updatedAt: 1761413100000, running: false, blank: true },
         },
       }),
     },
@@ -109,6 +115,28 @@ async function makeCtx(root, { withWebServer = true, deliverServices = null, dsh
         rows: {
           title: { ver: 1, seq: 9, val: "ProjCache C 标题" },
           sessionListMetadata: { ver: 1, seq: 9, val: { blank: false, lastPromptAt: 1761412900000 } },
+        },
+      },
+    }));
+    // ID_D: blank session, no title row (real cold-session shape: the zstd
+    // log holds only the header line) → hidden
+    await writeFile(path.join(pc, ID_D + ".json"), JSON.stringify({
+      version: 7,
+      record: {
+        identity: { formatVersion: 4, createdAt: 1761000000002, cwd: "C:\\ws\\two\\d", isSeeded: false, inheritedEventCount: 0 },
+        rows: {
+          sessionListMetadata: { ver: 1, seq: 1, val: { blank: true, lastPromptAt: null } },
+        },
+      },
+    }));
+    // ID_E: blank flag but a title row exists → kept
+    await writeFile(path.join(pc, ID_E + ".json"), JSON.stringify({
+      version: 7,
+      record: {
+        identity: { formatVersion: 4, createdAt: 1761000000003, cwd: "C:\\ws\\two\\e", isSeeded: false, inheritedEventCount: 0 },
+        rows: {
+          title: { ver: 1, seq: 9, val: "ProjCache E 标题" },
+          sessionListMetadata: { ver: 1, seq: 9, val: { blank: true, lastPromptAt: 1761413100000 } },
         },
       },
     }));
@@ -233,6 +261,11 @@ test("stateRoute_returnsPendingAndWorkspaces", async () => {
     const sc = wsTwo.sessions.find((s) => s.id === ID_C);
     assert.equal(sc.title, "ProjCache C 标题");
     assert.equal(sc.updatedAt, 1761412900000);
+    // blank session WITHOUT a title is hidden (GUI parity)
+    assert.equal(wsTwo.sessions.find((s) => s.id === ID_D), undefined);
+    // blank flag WITH a title is kept (friendly label wins)
+    const se = wsTwo.sessions.find((s) => s.id === ID_E);
+    assert.equal(se.title, "ProjCache E 标题");
     // most-recent-first within a workspace (ID_B lastPromptAt > ID_A)
     assert.equal(wsOne.sessions[0].id, ID_B);
     // workspace ordering by latest activity (ws-two is more recent)
