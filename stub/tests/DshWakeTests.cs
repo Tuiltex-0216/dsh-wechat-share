@@ -13,9 +13,9 @@ public sealed class DshWakeTests
     [Fact]
     public void ResolveExePath_FindsInstalledDsh()
     {
-        var exe = DshWake.ResolveExePath();
+        var (exe, diag) = DshWake.ResolveExePath();
         Assert.NotNull(exe);
         Assert.EndsWith("DSH Desktop.exe", exe!);
-        Assert.True(File.Exists(exe), $"exe not on disk: {exe}");
+        Assert.True(File.Exists(exe), $"exe not on disk: {exe} (diag: {diag})");
     }
 }

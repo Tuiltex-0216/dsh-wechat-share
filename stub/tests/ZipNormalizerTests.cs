@@ -101,7 +101,8 @@ public sealed class ZipNormalizerTests
                 WriteEntry(zip, "聊天记录内的图片、视频和文件/photo2.jpg", JpegBytes()); // correct
                 WriteEntry(zip, "聊天记录内的图片、视频和文件/clip.mp4", FtypBytes("isom")); // video — untouched
             }
-            var report = ZipNormalizer.Normalize(zipPath);
+            var (resultPath, report) = ZipNormalizer.Normalize(zipPath, Path.Combine(dir, "fallback"));
+            Assert.Equal(zipPath, resultPath); // in-place (writable dir)
             Assert.Single(report);
             // full entry paths (forensically useful)
             Assert.Equal("聊天记录内的图片、视频和文件/photo1.jpg → 聊天记录内的图片、视频和文件/photo1.png", report[0]);
@@ -138,7 +139,8 @@ public sealed class ZipNormalizerTests
                 WriteEntry(zip, "media/x.png", PngBytes());   // existing real png
                 WriteEntry(zip, "media/x.jpg", PngBytes());   // png bytes → wants x.png → collision
             }
-            var report = ZipNormalizer.Normalize(zipPath);
+            var (resultPath, report) = ZipNormalizer.Normalize(zipPath, Path.Combine(dir, "fallback"));
+            Assert.Equal(zipPath, resultPath);
             Assert.Single(report);
             Assert.True(report[0].Contains("x_1.png"), $"report was: {report[0]}");
             using var check = ZipFile.OpenRead(zipPath);
@@ -166,12 +168,59 @@ public sealed class ZipNormalizerTests
                 WriteEntry(zip, "a.txt", "hello");
                 WriteEntry(zip, "media/b.jpg", JpegBytes());
             }
-            var report = ZipNormalizer.Normalize(zipPath);
+            var (resultPath, report) = ZipNormalizer.Normalize(zipPath, Path.Combine(dir, "fallback"));
+            Assert.Equal(zipPath, resultPath);
             Assert.Empty(report);
         }
         finally
         {
             Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// The WeChat placeholder scenario (exact log evidence: "Access to the
+    /// path '...Placeholders\....zip.wxnorm-....tmp' is denied"): the in-place
+    /// swap is denied while reads still work. Simulated by holding the zip
+    /// open with FileShare.ReadWrite — Phase 1 reads fine, the temp file is
+    /// creatable, but File.Move(overwrite) is refused → the exact catch path
+    /// that the production denial hits. Normalize must fall back to a temp
+    /// copy under fallbackDir, leaving the original untouched.
+    /// </summary>
+    [Fact]
+    public void Normalize_SwapDenied_FallsBackToTempCopy()
+    {
+        var dir = Path.Combine(TempDir(), "wxshare-norm-" + Guid.NewGuid().ToString("N"));
+        var fallback = Path.Combine(TempDir(), "wxshare-norm-fb-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var zipPath = Path.Combine(dir, "held.zip");
+        try
+        {
+            using (var zip = ZipFile.Open(zipPath, ZipArchiveMode.Create))
+            {
+                WriteEntry(zip, "media/pic.jpg", PngBytes()); // misnamed
+            }
+            // hold the zip open (read sharing allowed, replace denied)
+            using var hold = new FileStream(zipPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            var (resultPath, report) = ZipNormalizer.Normalize(zipPath, fallback);
+            Assert.Single(report);
+            // result is a DIFFERENT file under the fallback dir
+            Assert.NotEqual(zipPath, resultPath);
+            Assert.True(resultPath.StartsWith(fallback, StringComparison.OrdinalIgnoreCase),
+                $"fallback path {resultPath} not under {fallback}");
+            Assert.True(File.Exists(resultPath));
+            using var check = ZipFile.OpenRead(resultPath);
+            var names = check.Entries.Select(e => e.FullName).ToList();
+            Assert.Contains("media/pic.png", names);
+            Assert.DoesNotContain("media/pic.jpg", names);
+            // original untouched (still the misnamed entry)
+            using var orig = ZipFile.OpenRead(zipPath);
+            Assert.Contains("media/pic.jpg", orig.Entries.Select(e => e.FullName));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+            if (Directory.Exists(fallback)) Directory.Delete(fallback, true);
         }
     }
 

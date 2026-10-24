@@ -14,47 +14,81 @@ namespace WeChatShare.Stub;
 /// </summary>
 public static class DshWake
 {
-    /// <summary>Resolve the DSH Desktop exe (uninstall key → Program Files fallback).</summary>
-    public static string? ResolveExePath()
+    /// <summary>
+    /// Resolve the DSH Desktop exe: running-process path → uninstall
+    /// registry scan → Program Files fallback. Returns (path, diagnostics)
+    /// — diagnostics names every probe and its result (the first version
+    /// failed silently inside the package context and was undiagnosable).
+    /// </summary>
+    public static (string? Path, string Diagnostics) ResolveExePath()
     {
+        var notes = new List<string>();
+        // 1) a running DSH Desktop process knows its own exe path
         try
         {
-            using var key = Registry.LocalMachine.OpenSubKey(
-                @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{DSH-DESKTOP-UNINSTALL-KEY}");
-            // DSH Desktop's real uninstall key name varies; scan all Uninstall
-            // entries for InstallLocation containing "DSH Desktop".
+            var procs = Process.GetProcessesByName("DSH Desktop");
+            if (procs.Length > 0)
+            {
+                var p0 = procs[0];
+                try
+                {
+                    var fn = p0.MainModule?.FileName;
+                    notes.Add("process: " + (fn ?? "no-mainmodule"));
+                    if (fn is not null && File.Exists(fn)) return (fn, string.Join("; ", notes));
+                }
+                finally { p0.Dispose(); }
+            }
+            else notes.Add("process: none running");
+            foreach (var p in procs) p.Dispose();
+        }
+        catch (Exception ex) { notes.Add("process: " + ex.Message); }
+        // 2) uninstall registry InstallLocation scan
+        try
+        {
             using var uninstall = Registry.LocalMachine.OpenSubKey(
                 @"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall");
-            if (uninstall is not null)
+            if (uninstall is null) notes.Add("registry: HKLM Uninstall not readable");
+            else
             {
+                var hits = 0;
                 foreach (var subName in uninstall.GetSubKeyNames())
                 {
                     using var sub = uninstall.OpenSubKey(subName);
                     var installLocation = sub?.GetValue("InstallLocation") as string;
                     if (string.IsNullOrWhiteSpace(installLocation)) continue;
                     if (!installLocation.Contains("DSH Desktop", StringComparison.OrdinalIgnoreCase)) continue;
+                    hits++;
                     var candidate = Path.Combine(installLocation, "DSH Desktop.exe");
-                    if (File.Exists(candidate)) return candidate;
+                    notes.Add("registry: " + installLocation + " exists=" + File.Exists(candidate));
+                    if (File.Exists(candidate)) return (candidate, string.Join("; ", notes));
                 }
+                notes.Add("registry: " + hits + " DSH InstallLocation hit(s), no exe");
             }
         }
-        catch
+        catch (Exception ex) { notes.Add("registry: " + ex.Message); }
+        // 3) Program Files fallback (both common roots)
+        foreach (var root in new[]
         {
-            // registry unavailable — fall through
+            Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+            @"C:\Program Files",
+        })
+        {
+            if (string.IsNullOrEmpty(root)) continue;
+            var candidate = Path.Combine(root, "DSH Desktop", "DSH Desktop.exe");
+            notes.Add("fallback: " + candidate + " exists=" + File.Exists(candidate));
+            if (File.Exists(candidate)) return (candidate, string.Join("; ", notes));
         }
-        var fallback = @"C:\Program Files\DSH Desktop\DSH Desktop.exe";
-        return File.Exists(fallback) ? fallback : null;
+        return (null, string.Join("; ", notes));
     }
 
     /// <summary>
-    /// Launch DSH Desktop detached. Returns true when a process was started.
-    /// ShellExecute "open" with no verb-specific console: the target is a
-    /// GUI app, no window flash from our side.
+    /// Launch DSH Desktop detached. Returns (started, diagnostics).
+    /// ShellExecute "open": the target is a GUI app, no window flash.
     /// </summary>
-    public static bool Wake()
+    public static (bool Started, string Diagnostics) Wake()
     {
-        var exe = ResolveExePath();
-        if (exe is null) return false;
+        var (exe, diag) = ResolveExePath();
+        if (exe is null) return (false, diag);
         try
         {
             var psi = new ProcessStartInfo
@@ -64,11 +98,11 @@ public static class DshWake
                 WorkingDirectory = Path.GetDirectoryName(exe)!,
             };
             Process.Start(psi);
-            return true;
+            return (true, diag + "; launched: " + exe);
         }
-        catch
+        catch (Exception ex)
         {
-            return false;
+            return (false, diag + "; launch failed: " + ex.Message);
         }
     }
 }

@@ -28,6 +28,13 @@ public static class Program
                 AssetGen.WriteLogos(args[1], args[2]);
                 return 0;
             }
+            if (args.Length > 0 && args[0] == "--wake-probe")
+            {
+                var (exe, diag) = DshWake.ResolveExePath();
+                Console.WriteLine($"wake-probe: exe={exe ?? "null"}");
+                Console.WriteLine($"wake-probe: {diag}");
+                return exe is null ? 1 : 0;
+            }
             return await HandleActivationAsync();
         }
         catch (Exception ex)
@@ -64,15 +71,16 @@ public static class Program
             Console.Error.WriteLine(reject);
             return 1;
         }
+        var paths1 = InboxPaths.Default();
+        var commitFiles = new List<(string Path, string Name, string? ContentType)>();
         foreach (var f in files)
         {
-            var renames = ZipNormalizer.Normalize(f.Path);
+            var (normalizedPath, renames) = ZipNormalizer.Normalize(f.Path, Path.Combine(paths1.InboxRoot, ".wxnorm"));
             if (renames.Count > 0)
                 Console.Error.WriteLine($"[wxshare-stub] normalized {renames.Count} extension(s): {string.Join("; ", renames)}");
+            commitFiles.Add((normalizedPath, f.Name, f.ContentType));
         }
-        var paths1 = InboxPaths.Default();
-        var committed = await InboxWriter.CommitAsync(paths1,
-            files.Select(f => (f.Path, f.Name, (string?)f.ContentType)).ToList());
+        var committed = await InboxWriter.CommitAsync(paths1, commitFiles);
         Console.WriteLine($"selftest committed {committed.BatchId} at {committed.BatchDirectory}");
         return 0;
     }
@@ -99,25 +107,45 @@ public static class Program
 
             // WeChat misnames media entries (PNG/HEIC bytes as ".jpg") —
             // normalize extensions by magic bytes before the zip is archived.
+            // WeChat stages share files in Temp\WeixinShare\Placeholders — a
+            // directory the stub cannot write to — so Normalize falls back to
+            // a temp copy under the inbox when in-place swap is denied.
+            // Commit uses the (possibly temp) path; temp files are cleaned
+            // up after the commit copies their bytes.
+            var paths = InboxPaths.Default();
+            var normFallbackDir = Path.Combine(paths.InboxRoot, ".wxnorm");
+            var commitFiles = new List<(string Path, string Name, string? ContentType)>();
+            var tempArtifacts = new List<string>();
             foreach (var f in files)
             {
+                var usePath = f.Path;
                 try
                 {
-                    var renames = ZipNormalizer.Normalize(f.Path);
+                    var (normalizedPath, renames) = ZipNormalizer.Normalize(f.Path, normFallbackDir);
                     if (renames.Count > 0)
-                        InboxWriter.Log(InboxPaths.Default(), $"normalized {renames.Count} extension(s) in {f.Name}: {string.Join("; ", renames)}");
+                    {
+                        var isTempCopy = Path.GetFullPath(normalizedPath) != Path.GetFullPath(f.Path);
+                        var mode = isTempCopy ? "temp-copy" : "in-place";
+                        InboxWriter.Log(paths, $"normalized {renames.Count} extension(s) in {f.Name} [{mode}]: {string.Join("; ", renames)}");
+                        usePath = normalizedPath;
+                        if (isTempCopy)
+                            tempArtifacts.Add(normalizedPath);
+                    }
                 }
                 catch (Exception normEx)
                 {
                     // normalization is best-effort — a broken zip still ships
                     // (the receiver sees the original names)
-                    InboxWriter.Log(InboxPaths.Default(), $"normalize failed for {f.Name}: {normEx.Message}");
+                    InboxWriter.Log(paths, $"normalize failed for {f.Name}: {normEx.Message}");
                 }
+                commitFiles.Add((usePath, f.Name, f.ContentType));
             }
 
-            var paths = InboxPaths.Default();
-            var committed = await InboxWriter.CommitAsync(paths,
-                files.Select(f => (f.Path, f.Name, (string?)f.ContentType)).ToList());
+            var committed = await InboxWriter.CommitAsync(paths, commitFiles);
+            foreach (var t in tempArtifacts)
+            {
+                try { File.Delete(t); } catch { /* best effort */ }
+            }
             ShareReports.DataRetrieved(operation);
             ShareReports.Completed(operation);
             InboxWriter.Log(paths, $"share committed {committed.BatchId} files={committed.Manifest.Items.Count}");
@@ -125,10 +153,8 @@ public static class Program
             // behavior c (user-chosen): wake DSH so the overlay appears.
             // If DSH is already running with a window, the second instance
             // exits via the single-instance lock after promoting the window.
-            if (DshWake.Wake())
-                InboxWriter.Log(paths, "dsh wake launched");
-            else
-                InboxWriter.Log(paths, "dsh wake unavailable (exe not found) — batch queued silently");
+            var (started, wakeDiag) = DshWake.Wake();
+            InboxWriter.Log(paths, (started ? "dsh wake launched: " : "dsh wake unavailable: ") + wakeDiag);
             return 0;
         }
         catch (Exception ex)

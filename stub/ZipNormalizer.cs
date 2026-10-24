@@ -54,13 +54,15 @@ public static class ZipNormalizer
     }
 
     /// <summary>
-    /// Rewrites a zip in place so every image entry carries its true
-    /// extension. Entries are renamed within their folder; name collisions
-    /// get a "_1", "_2"… suffix. The file is rebuilt via a temp file and
-    /// swapped atomically enough for this pipeline (the share host keeps the
-    /// source alive until we return).
+    /// Rewrites a zip so every image entry carries its true extension.
+    /// Entries are renamed within their folder; name collisions get a
+    /// "_1", "_2"… suffix. Returns (pathToCommit, report): in-place swap
+    /// when the zip's directory is writable, otherwise a temp copy under
+    /// <paramref name="fallbackDir"/> (the original stays untouched —
+    /// WeChat owns its placeholder files). Empty report = nothing to fix,
+    /// pathToCommit = the original path.
     /// </summary>
-    public static IReadOnlyList<string> Normalize(string zipPath)
+    public static (string Path, IReadOnlyList<string> Report) Normalize(string zipPath, string fallbackDir)
     {
         var report = new List<string>();
 
@@ -115,39 +117,56 @@ public static class ZipNormalizer
                 i++;
             }
         }
-        if (plan.Count == 0) return report;
+        if (plan.Count == 0) return (zipPath, report);
 
-        // Phase 2: rebuild via temp file (source is CLOSED — Windows refuses
-        // to swap a file that is still locked by an open archive).
+        // Phase 2a: try IN-PLACE (temp file beside the zip, then swap).
+        // WeChat's share placeholders (Temp\WeixinShare\Placeholders) are
+        // write-denied to the stub — that failure is expected and handled
+        // by the fallback below.
         var tempPath = zipPath + ".wxnorm-" + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {
-            using (var target = ZipFile.Open(tempPath, ZipArchiveMode.Create))
-            using (var source = ZipFile.OpenRead(zipPath))
-            {
-                int i = 0;
-                foreach (var entry in source.Entries)
-                {
-                    var rename = plan.FirstOrDefault(p => p.Index == i);
-                    var newName = rename.New is not null ? rename.New : entry.FullName;
-                    var newEntry = target.CreateEntry(newName, CompressionLevel.Optimal);
-                    using var srcStream = entry.Open();
-                    using var dstStream = newEntry.Open();
-                    srcStream.CopyTo(dstStream);
-                    if (rename.New is not null) report.Add($"{rename.Old} → {rename.New}");
-                    i++;
-                }
-            }
+            Rebuild(zipPath, tempPath, plan, report);
             File.Move(tempPath, zipPath, overwrite: true);
+            return (zipPath, report);
         }
-        finally
+        catch (Exception inPlaceEx) when (inPlaceEx is IOException or UnauthorizedAccessException)
         {
-            if (File.Exists(tempPath))
+            try { if (File.Exists(tempPath)) File.Delete(tempPath); } catch { /* best effort */ }
+            // Phase 2a's Rebuild already filled the report — reset it so the
+            // fallback rebuild does not double-record.
+            report.Clear();
+            // Phase 2b: fallback — rebuild into the caller-supplied writable
+            // dir (under the inbox); the ORIGINAL placeholder file is left
+            // untouched (WeChat owns it).
+            Directory.CreateDirectory(fallbackDir);
+            var fallbackPath = Path.Combine(fallbackDir, "wxnorm-" + Guid.NewGuid().ToString("N") + "-" + Path.GetFileName(zipPath));
+            Rebuild(zipPath, fallbackPath, plan, report);
+            return (fallbackPath, report);
+        }
+    }
+
+    private static void Rebuild(string sourceZip, string targetZip,
+        List<(int Index, string Old, string New)> plan, List<string> report)
+    {
+        // source is CLOSED during the rebuild (Windows refuses to swap a
+        // file still locked by an open archive — the rebuild reopens it read-only)
+        using (var target = ZipFile.Open(targetZip, ZipArchiveMode.Create))
+        using (var source = ZipFile.OpenRead(sourceZip))
+        {
+            int i = 0;
+            foreach (var entry in source.Entries)
             {
-                try { File.Delete(tempPath); } catch { /* best effort */ }
+                var rename = plan.FirstOrDefault(p => p.Index == i);
+                var newName = rename.New is not null ? rename.New : entry.FullName;
+                var newEntry = target.CreateEntry(newName, CompressionLevel.Optimal);
+                using var srcStream = entry.Open();
+                using var dstStream = newEntry.Open();
+                srcStream.CopyTo(dstStream);
+                if (rename.New is not null) report.Add($"{rename.Old} → {rename.New}");
+                i++;
             }
         }
-        return report;
     }
 
     private static string Combine(string dir, string name)
