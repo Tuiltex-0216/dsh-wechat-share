@@ -27,9 +27,23 @@ function sendJson(res, status, obj) {
   res.end(JSON.stringify(obj));
 }
 
-async function readJsonBody(req) {
+// Y4 (review): the webserver is bound to 127.0.0.1 — any local process can
+// POST. deliver/dismiss bodies are a few dozen bytes; cap at 1MB and reply
+// 413 beyond that (no unbounded Buffer.concat).
+const MAX_BODY_BYTES = 1024 * 1024;
+
+async function readJsonBody(req, res) {
   const chunks = [];
-  for await (const c of req) chunks.push(c);
+  let total = 0;
+  for await (const c of req) {
+    total += c.length;
+    if (total > MAX_BODY_BYTES) {
+      sendJson(res, 413, { ok: false, code: "body-too-large", message: "request body exceeds 1MB" });
+      req.destroy?.();
+      return null;
+    }
+    chunks.push(c);
+  }
   const raw = Buffer.concat(chunks).toString("utf8");
   if (!raw) return {};
   try {
@@ -113,10 +127,19 @@ export function apply(ctx, config = {}) {
     process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"),
     "dsh-desktop", "harness"
   );
-  const projCache = new Map(); // sessionId → {title?, lastPromptAt?, missing?}
+  const projCache = new Map(); // sessionId → {meta, at, missing?}
+  // Y7 (review): a MISSING entry is time-sensitive — sessions created while
+  // DSH runs get their projcache file shortly after (GUI projection), so a
+  // negative cache must expire (default 60s) or new sessions show id suffixes
+  // for the whole process lifetime. Positive entries are stable (the title
+  // rarely changes) and cache long.
+  const projCacheTtlMs = config.projCacheTtlMs ?? 60_000;
 
   function sessionProjMeta(sessionId) {
-    if (projCache.has(sessionId)) return projCache.get(sessionId);
+    const hit = projCache.get(sessionId);
+    if (hit && (!hit.meta.missing || Date.now() - hit.at < projCacheTtlMs)) {
+      return hit.meta;
+    }
     let meta = { missing: true };
     try {
       const raw = readFileSync(path.join(dshHome, "storages", "session_projcache", "sessions", sessionId + ".json"), "utf8");
@@ -130,7 +153,7 @@ export function apply(ctx, config = {}) {
     } catch {
       meta = { missing: true };
     }
-    projCache.set(sessionId, meta);
+    projCache.set(sessionId, { meta, at: Date.now() });
     return meta;
   }
 
@@ -229,7 +252,8 @@ export function apply(ctx, config = {}) {
         kind: "exact",
         path: "/wxshare/api/deliver",
         handler: async (req, res) => {
-          const body = await readJsonBody(req);
+          const body = await readJsonBody(req, res);
+          if (body === null) return; // 413 already sent
           const { batchId, sessionId } = body ?? {};
           if (!batchId || !sessionId) {
             sendJson(res, 400, { ok: false, code: "bad-request", message: "batchId and sessionId required" });
@@ -247,7 +271,15 @@ export function apply(ctx, config = {}) {
           deliverChain = deliverChain
             .then(async () => {
               try {
-                const result = await deliverBatch({ batch, sessionId, services, onLog: (m) => onLog(m) });
+                // Y6 (review): a hung host service must not wedge the whole
+                // serial chain — overall 10min timeout, then the chain frees.
+                const DELIVER_TIMEOUT_MS = 10 * 60_000;
+                const result = await Promise.race([
+                  deliverBatch({ batch, sessionId, services, onLog: (m) => onLog(m) }),
+                  new Promise((_, reject) =>
+                    setTimeout(() => reject(new DeliverError("gateway/timeout", `delivery timed out after ${DELIVER_TIMEOUT_MS / 60000}min`)), DELIVER_TIMEOUT_MS).unref?.()
+                  ),
+                ]);
                 await moveToDone(inboxRoot, batchId, "delivered");
                 pending.delete(batchId);
                 return result;
@@ -271,7 +303,8 @@ export function apply(ctx, config = {}) {
         kind: "exact",
         path: "/wxshare/api/dismiss",
         handler: async (req, res) => {
-          const body = await readJsonBody(req);
+          const body = await readJsonBody(req, res);
+          if (body === null) return; // 413 already sent
           const { batchId } = body ?? {};
           if (!batchId) {
             sendJson(res, 400, { ok: false, code: "bad-request", message: "batchId required" });

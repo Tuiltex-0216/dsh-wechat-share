@@ -277,6 +277,54 @@ test("stateRoute_returnsPendingAndWorkspaces", async () => {
   }
 });
 
+// Y7 (review): a session created while DSH runs gets its projcache file
+// shortly after — the negative cache must expire (TTL) so the friendly
+// title appears without a restart.
+test("stateRoute_projCacheMissingTtl_picksUpLateFile", async () => {
+  const root = await makeRoot();
+  const dshHome = await mkdtemp(path.join(TEST_TMP, "wxshare-dshhome-"));
+  const ID_F = "session-ffff1111-2222-3333-4444-555566667777";
+  try {
+    const pc = path.join(dshHome, "storages", "session_projcache", "sessions");
+    await mkdir(pc, { recursive: true });
+    const ctx = await makeCtx(root, { dshHome });
+    // inject ID_F into the first workspace (live summary, no projcache yet)
+    const reg = ctx.get("workspaceRegistry");
+    const origList = reg.list;
+    reg.list = async () => {
+      const list = await origList();
+      list[0].sessionIds = [...list[0].sessionIds, ID_F];
+      return list;
+    };
+    const dispose = apply(ctx, { inboxRoot: root, dshHome, projCacheTtlMs: 0 });
+    let res = await callRoute(ctx, "/wxshare/api/state");
+    let data = JSON.parse(res.body);
+    let wsOne = data.workspaces.find((w) => w.title === "one");
+    const f1 = wsOne.sessions.find((s) => s.id === ID_F);
+    assert.equal(f1.title, "555566667777"); // suffix fallback (no file yet)
+    // the GUI projects the session → file appears
+    await writeFile(path.join(pc, ID_F + ".json"), JSON.stringify({
+      version: 7,
+      record: {
+        identity: { formatVersion: 4, createdAt: 1761000000009, cwd: "C:\\ws\\one\\f", isSeeded: false, inheritedEventCount: 0 },
+        rows: {
+          title: { ver: 1, seq: 9, val: "迟到的标题" },
+          sessionListMetadata: { ver: 1, seq: 9, val: { blank: false, lastPromptAt: 1761413200000 } },
+        },
+      },
+    }));
+    res = await callRoute(ctx, "/wxshare/api/state");
+    data = JSON.parse(res.body);
+    wsOne = data.workspaces.find((w) => w.title === "one");
+    const f2 = wsOne.sessions.find((s) => s.id === ID_F);
+    assert.equal(f2.title, "迟到的标题"); // TTL expired → re-read → title found
+    await dispose();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+    await rm(dshHome, { recursive: true, force: true });
+  }
+});
+
 test("deliverRoute_success_movesToDone", async () => {
   const root = await makeRoot();
   try {

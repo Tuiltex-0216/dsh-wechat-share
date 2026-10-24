@@ -52,6 +52,60 @@ test("scanReady_ignoresCorruptManifest", async () => {
   }
 });
 
+// Y1 (review): the manifest is externally writable — reject traversal.
+test("scanReady_rejectsRelativePathTraversal", async () => {
+  const root = await makeRoot();
+  try {
+    await writeBatch(root, "good-batch");
+    const evil = path.join(root, "Ready", "evil-batch");
+    await mkdir(path.join(evil, "files"), { recursive: true });
+    const payload = Buffer.from("sensitive");
+    await writeFile(path.join(evil, "files", "in.zip"), payload);
+    // relativePath escapes the batch dir (size matches the real file)
+    await writeFile(path.join(evil, "manifest.json"), JSON.stringify({
+      schemaVersion: 1,
+      batchId: "evil-batch",
+      createdAt: new Date().toISOString(),
+      source: "wechat-share",
+      items: [{
+        name: "in.zip",
+        size: payload.length,
+        relativePath: "../../../../Documents/secret.txt",
+        contentType: "application/zip",
+      }],
+    }));
+    const batches = await scanReady(root, (msg) => {});
+    assert.equal(batches.length, 1);
+    assert.equal(batches[0].batchId, "good-batch");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("scanReady_rejectsBatchIdDirnameMismatch", async () => {
+  const root = await makeRoot();
+  try {
+    await writeBatch(root, "good-batch");
+    const liar = path.join(root, "Ready", "dir-name");
+    await mkdir(path.join(liar, "files"), { recursive: true });
+    const payload = Buffer.from("zz");
+    await writeFile(path.join(liar, "files", "a.zip"), payload);
+    // manifest.batchId != directory name → spoofed identity
+    await writeFile(path.join(liar, "manifest.json"), JSON.stringify({
+      schemaVersion: 1,
+      batchId: "other-batch",
+      createdAt: new Date().toISOString(),
+      source: "wechat-share",
+      items: [{ name: "a.zip", size: 2, relativePath: "files/a.zip", contentType: "application/zip" }],
+    }));
+    const batches = await scanReady(root, (msg) => {});
+    assert.equal(batches.length, 1);
+    assert.equal(batches[0].batchId, "good-batch");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("scanReady_reportsItemSizesAndTotal", async () => {
   const root = await makeRoot();
   try {
@@ -130,8 +184,7 @@ test("sweep_prunesStaleReadyAndDone", async () => {
     const w = createInboxWatcher({ root, onBatch: () => {}, onLog: () => {} });
     await w.sweepNow();
     await w.dispose();
-    assert.ok(!(await stat(fresh).catch(() => null)) === false || true); // fresh dir still exists below
-    await stat(fresh); // fresh survives
+    await stat(fresh); // fresh survives (the real check; the former tautology line removed)
     await assert.rejects(stat(oldReady)); // 31d ready pruned
     await assert.rejects(stat(oldDone)); // 8d done pruned
   } finally {

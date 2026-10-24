@@ -64,6 +64,12 @@ public static class Program
             Console.Error.WriteLine(reject);
             return 1;
         }
+        foreach (var f in files)
+        {
+            var renames = ZipNormalizer.Normalize(f.Path);
+            if (renames.Count > 0)
+                Console.Error.WriteLine($"[wxshare-stub] normalized {renames.Count} extension(s): {string.Join("; ", renames)}");
+        }
         var paths1 = InboxPaths.Default();
         var committed = await InboxWriter.CommitAsync(paths1,
             files.Select(f => (f.Path, f.Name, (string?)f.ContentType)).ToList());
@@ -89,6 +95,24 @@ public static class Program
             {
                 ShareReports.Failed(operation, reject);
                 return 1;
+            }
+
+            // WeChat misnames media entries (PNG/HEIC bytes as ".jpg") —
+            // normalize extensions by magic bytes before the zip is archived.
+            foreach (var f in files)
+            {
+                try
+                {
+                    var renames = ZipNormalizer.Normalize(f.Path);
+                    if (renames.Count > 0)
+                        InboxWriter.Log(InboxPaths.Default(), $"normalized {renames.Count} extension(s) in {f.Name}: {string.Join("; ", renames)}");
+                }
+                catch (Exception normEx)
+                {
+                    // normalization is best-effort — a broken zip still ships
+                    // (the receiver sees the original names)
+                    InboxWriter.Log(InboxPaths.Default(), $"normalize failed for {f.Name}: {normEx.Message}");
+                }
             }
 
             var paths = InboxPaths.Default();

@@ -22,7 +22,7 @@ function doneDir(root) {
 
 // Read one Ready\<batchId> directory. Returns BatchInfo or null (corrupt /
 // incomplete — caller logs via onLog when invoked from the watcher).
-async function readBatch(root, batchId, now = Date.now()) {
+async function readBatch(root, batchId) {
   const dir = path.join(readyDir(root), batchId);
   let raw;
   try {
@@ -39,13 +39,27 @@ async function readBatch(root, batchId, now = Date.now()) {
   if (!manifest || typeof manifest.batchId !== "string" || !Array.isArray(manifest.items)) {
     return { ok: false, reason: "manifest missing batchId/items" };
   }
+  // Y1 (review): the manifest is an externally writable file — the batch
+  // identity must match the directory name (no spoofed batchId), and every
+  // relativePath must stay inside the batch dir (no traversal).
+  if (manifest.batchId !== path.basename(dir)) {
+    return { ok: false, reason: `batchId/dirname mismatch: ${manifest.batchId}` };
+  }
+  const dirResolved = path.resolve(dir);
   // completeness: every manifest item must exist on disk with the declared size
   const items = [];
   let totalBytes = 0;
   for (const it of manifest.items) {
+    if (typeof it.relativePath !== "string" || path.isAbsolute(it.relativePath)) {
+      return { ok: false, reason: `item path invalid: ${String(it.relativePath).slice(0, 80)}` };
+    }
+    const itemResolved = path.resolve(dirResolved, it.relativePath);
+    if (itemResolved !== dirResolved && !itemResolved.startsWith(dirResolved + path.sep)) {
+      return { ok: false, reason: `item path escapes batch dir: ${it.relativePath}` };
+    }
     let st;
     try {
-      st = await stat(path.join(dir, it.relativePath));
+      st = await stat(itemResolved);
     } catch {
       return { ok: false, reason: `item missing: ${it.relativePath}` };
     }
@@ -86,8 +100,13 @@ export async function scanReady(root, onLog = () => {}) {
   return out;
 }
 
-// Move Ready\<batchId> → Done\<yyyyMMdd>\<batchId> (manifest + files kept).
+// Move Ready\<batchId> → Done\<yyyyMMdd>\<batchId> (manifest + files kept,
+// plus a one-line outcome.json recording why the batch left Ready).
 export async function moveToDone(root, batchId, outcome = "moved") {
+  // Y1 (review): batchId reaches here from HTTP bodies — a plain name only.
+  if (typeof batchId !== "string" || batchId !== path.basename(batchId) || batchId.length === 0 || batchId === "." || batchId === "..") {
+    throw new Error(`moveToDone: invalid batchId: ${String(batchId).slice(0, 60)}`);
+  }
   const from = path.join(readyDir(root), batchId);
   const day = new Date().toISOString().slice(0, 10).replace(/-/g, "");
   const destParent = path.join(doneDir(root), day);
@@ -99,6 +118,13 @@ export async function moveToDone(root, batchId, outcome = "moved") {
     // cross-device / transient lock: copy tree then remove source
     await copyTree(from, to);
     await rm(from, { recursive: true, force: true });
+  }
+  try {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(path.join(to, "outcome.json"),
+      JSON.stringify({ outcome, at: new Date().toISOString() }) + "\n");
+  } catch {
+    /* forensic nicety — never fail the move */
   }
   return to;
 }
@@ -269,7 +295,10 @@ export function createInboxWatcher({
     }
   }
 
-  const startPromise = start();
+  // Y5 (review): attach a handler at creation — a start() rejection (e.g.
+  // mkdir permission) must not become an unhandledRejection if the host
+  // never disposes the watcher.
+  const startPromise = start().catch((err) => onLog(`watcher start failed: ${err.message}`));
 
   return {
     sweepNow,

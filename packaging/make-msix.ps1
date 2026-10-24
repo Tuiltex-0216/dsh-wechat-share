@@ -134,8 +134,9 @@ try {
         Remove-AppxPackage -Package $alreadyRegistered.PackageFullName -ErrorAction SilentlyContinue
         Log "removed previous $($alreadyRegistered.PackageFullName)"
     }
+    # Y8 (review): cmdlet — no $LASTEXITCODE; EAP=Stop throws on failure.
+    # The real verification is the existence + Status check below.
     Add-AppxPackage -Register (Join-Path $stageDir 'AppxManifest.xml') -ExternalLocation $distDir
-    if ($LASTEXITCODE -ne 0) { throw "Add-AppxPackage -Register failed ($LASTEXITCODE)" }
     $registered = Get-AppxPackage -Name 'DshDesktop.ShareTarget' -ErrorAction SilentlyContinue
     if (-not $registered) { throw 'package registration did not stick' }
     if ($registered.Status -ne 'Ok') { throw "registered package unhealthy: $($registered.Status)" }

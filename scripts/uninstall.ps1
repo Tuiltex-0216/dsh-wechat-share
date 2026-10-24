@@ -107,8 +107,8 @@ try { $registered = Get-AppxPackage -Name 'DshDesktop.ShareTarget' -ErrorAction 
 if ($registered) {
     Will "unregister share target $($registered.PackageFullName)"
     if ($Execute) {
+        # Y8 (review): cmdlet — no $LASTEXITCODE; EAP=Stop throws on failure
         Remove-AppxPackage -Package $registered.PackageFullName
-        if ($LASTEXITCODE -ne 0) { throw "Remove-AppxPackage failed ($LASTEXITCODE)" }
     }
 } else {
     Say "[check] OK   no share target registered"

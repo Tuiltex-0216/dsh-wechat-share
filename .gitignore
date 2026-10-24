@@ -12,3 +12,6 @@ node_modules/
 stub/tests/bin/Debug/net8.0*/wxshare-t1-*/
 plugin/.test-tmp/
 e2e-unpack/
+packaging/certs/*.key.json
+packaging/certs/*password*
+stub/.test-tmp/

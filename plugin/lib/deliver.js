@@ -32,8 +32,9 @@ async function* streamFile(file) {
   const stream = createReadStream(file, { highWaterMark: CHUNK_SIZE });
   try {
     for await (const chunk of stream) {
-      const buf = Buffer.isBuffer(chunk) ? new Uint8Array(chunk) : new Uint8Array(chunk);
-      // re-chunk to at most CHUNK_SIZE (fs may yield larger buffers)
+      // createReadStream yields Buffers (Uint8Array views) — re-chunk to at
+      // most CHUNK_SIZE (fs may yield larger buffers).
+      const buf = Buffer.isBuffer(chunk) ? chunk : new Uint8Array(chunk);
       let off = 0;
       while (off < buf.length) {
         yield buf.subarray(off, Math.min(off + CHUNK_SIZE, buf.length));
@@ -67,9 +68,18 @@ export async function deliverBatch({ batch, sessionId, services, onLog = () => {
   if (zips.length === 0) throw new DeliverError("gateway/internal", `no zip items in batch ${batch.batchId}`);
 
   // 1) upload every zip → receiptIds
+  // Y1 (review): defensive containment — deliverBatch is a public export and
+  // may receive batch objects that never passed readBatch validation.
+  const dirResolved = path.resolve(batch.directory);
   const fileParts = [];
   for (const it of zips) {
-    const file = path.join(batch.directory, it.relativePath);
+    if (typeof it.relativePath !== "string" || path.isAbsolute(it.relativePath)) {
+      throw new DeliverError("gateway/internal", `batch item path invalid: ${String(it.relativePath).slice(0, 80)}`);
+    }
+    const file = path.resolve(dirResolved, it.relativePath);
+    if (file !== dirResolved && !file.startsWith(dirResolved + path.sep)) {
+      throw new DeliverError("gateway/internal", `batch item path escapes directory: ${it.relativePath}`);
+    }
     let st;
     try {
       st = await stat(file);
@@ -88,7 +98,7 @@ export async function deliverBatch({ batch, sessionId, services, onLog = () => {
     }
     if (!receipt?.receiptId) throw new DeliverError("gateway/internal", `upload returned no receiptId for ${it.name}`);
     fileParts.push({ type: "file", receiptId: receipt.receiptId });
-    void st;
+    void st; // existence verified above
   }
 
   // 2) one queued prompt: body template + all file parts

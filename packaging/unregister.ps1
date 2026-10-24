@@ -21,8 +21,10 @@ if (-not $pkg) {
     Write-Output 'not-registered'
     exit 0
 }
+# Y8 (review): Remove-AppxPackage is a cmdlet — it does not update
+# $LASTEXITCODE; EAP=Stop throws on failure. The real verification is the
+# existence check below.
 Remove-AppxPackage -Package $pkg.PackageFullName
-if ($LASTEXITCODE -ne 0) { throw "Remove-AppxPackage failed ($LASTEXITCODE)" }
 $left = Get-AppxPackage -Name 'DshDesktop.ShareTarget' -ErrorAction SilentlyContinue
 if ($left) { throw 'package still present after removal' }
 Log "removed $($pkg.PackageFullName)"

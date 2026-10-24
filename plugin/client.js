@@ -67,10 +67,13 @@ window.__ModuleLoader__.load({
 
 		// Same-origin relative API (the plugin's own webserver routes).
 		async function api(pathName, opts = {}) {
+			// 🟢8 (review): a hung webserver must not wedge the poll loop —
+			// the setTimeout only schedules AFTER the await resolves.
 			const res = await fetch(pathName, {
 				method: opts.method ?? "GET",
 				headers: opts.body ? { "Content-Type": "application/json" } : undefined,
 				body: opts.body ? JSON.stringify(opts.body) : undefined,
+				signal: AbortSignal.timeout(5000),
 			});
 			return res.json().catch(() => ({}));
 		}
@@ -98,6 +101,11 @@ window.__ModuleLoader__.load({
 			const [busy, setBusy] = useState(false);
 			const [result, setResult] = useState(null); // {kind:'ok'|'err', text}
 			const timer = useRef(null);
+			// Y3 (review): `busy` is state — two same-frame clicks both see
+			// busy=false. A ref guard makes the second click a no-op (without
+			// it the second POST races the moved batch and overwrites the
+			// success result with a transient error).
+			const inflight = useRef(false);
 
 			// 2s polling; paused while the document is hidden.
 			useEffect(() => {
@@ -129,7 +137,9 @@ window.__ModuleLoader__.load({
 				let best = null;
 				for (const w of wsList) {
 					for (const s of w.sessions) {
-						if (!best || String(s.updatedAt || "") > String(best.updatedAt || "")) {
+						// numeric epoch-ms comparison (🟢7: string compare is
+						// only accidentally correct for 13-digit timestamps)
+						if (!best || (s.updatedAt ?? 0) > (best.updatedAt ?? 0)) {
 							best = { wsPath: w.path, sessionId: s.id, sessionTitle: s.title || s.id, updatedAt: s.updatedAt };
 						}
 					}
@@ -156,7 +166,8 @@ window.__ModuleLoader__.load({
 			const degraded = state.degraded === "workspaceRegistry" || workspaces.length === 0;
 
 			async function deliver() {
-				if (!sel || busy || result?.kind === "ok") return;
+				if (!sel || busy || inflight.current || result?.kind === "ok") return;
+				inflight.current = true;
 				setBusy(true);
 				setResult(null);
 				try {
@@ -170,6 +181,7 @@ window.__ModuleLoader__.load({
 					setResult({ kind: "err", text: String(e) });
 				}
 				setBusy(false);
+				inflight.current = false;
 			}
 
 			async function dismiss() {

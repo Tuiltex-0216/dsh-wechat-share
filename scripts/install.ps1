@@ -71,9 +71,19 @@ if ($failures -gt 0) {
 }
 
 # ── deterministic hash12 over the package files ───────────────────────────
+# Y2 (review): exclude test/build junk — Get-ChildItem -Recurse DOES include
+# .test-tmp (and pwsh 7 Copy-Item <dir>\* copies it too), so a local test run
+# used to drift the hash12 → new generation dir per install. The hash and the
+# copy below must cover the SAME file set (哈希所及 = 拷贝所及).
+function Get-PackageFiles([string]$dir) {
+    Get-ChildItem -LiteralPath $dir -Recurse -File -Force | Where-Object {
+        $rel = $_.FullName.Substring($dir.Length + 1).Replace('\', '/')
+        -not ($rel -like '.test-tmp/*' -or $rel -like '*/.test-tmp/*' -or $rel -like 'bin/*' -or $rel -like 'obj/*' -or $rel -like '*/bin/*' -or $rel -like '*/obj/*')
+    }
+}
 $sha = [System.Security.Cryptography.SHA256]::Create()
 $combined = New-Object System.Text.StringBuilder
-Get-ChildItem -LiteralPath $pluginDir -Recurse -File | Sort-Object -Property FullName | ForEach-Object {
+Get-PackageFiles $pluginDir | Sort-Object -Property FullName | ForEach-Object {
     $rel = $_.FullName.Substring($pluginDir.Length + 1).Replace('\', '/')
     $h = [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($_.FullName))).Replace('-', '').ToLower()
     [void]$combined.AppendLine("$rel $h")
@@ -108,7 +118,13 @@ Will "copy plugin package → $genDir"
 if ($Execute) {
     if (Test-Path -LiteralPath $genDir) { Remove-Item -LiteralPath $genDir -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $genDir | Out-Null
-    Copy-Item -Path (Join-Path $pluginDir '*') -Destination $genDir -Recurse -Force
+    # Y2: same file set as the hash (Get-PackageFiles) — no .test-tmp/bin/obj
+    Get-PackageFiles $pluginDir | ForEach-Object {
+        $rel = $_.FullName.Substring($pluginDir.Length + 1)
+        $dest = Join-Path $genDir $rel
+        New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
+        Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
+    }
 }
 
 # ── step 3: profile package.json (4 injection points, node JSON DOM) ─────
