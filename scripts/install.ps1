@@ -146,12 +146,17 @@ if ($Execute) {
 }
 Remove-Item -LiteralPath $nodeScriptFile -Force -ErrorAction SilentlyContinue
 
-# ── step 4: dsh.cmd install ───────────────────────────────────────────────
-Will "run: $DshCmd --profile web install (in $ProfileDir)"
+# ── step 4: formal pnpm registration (dsh plugin install <local path>) ────
+# NOTE: `dsh install` does not exist (the bare word is rejected; profile load
+# fails on pre-existing broken bundles). The formal registration is
+# `dsh plugin --profile web install <generation path>` which links the local
+# package into dependencies + pnpm-lock.yaml so the desktop shell's startup
+# package.json rewrite preserves the registration.
+Will "run: $DshCmd plugin --profile web install $genDir"
 if ($Execute) {
     Push-Location $ProfileDir
-    try { & $DshCmd --profile web install } finally { Pop-Location }
-    if ($LASTEXITCODE -ne 0) { throw "dsh.cmd install failed ($LASTEXITCODE)" }
+    try { & $DshCmd plugin --profile web install $genDir } finally { Pop-Location }
+    if ($LASTEXITCODE -ne 0) { throw "dsh plugin install failed ($LASTEXITCODE)" }
 }
 
 # ── step 5: verify resolution ─────────────────────────────────────────────

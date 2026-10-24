@@ -86,12 +86,19 @@ foreach ($g in $genDirs) {
     if ($Execute) { Remove-Item -LiteralPath $g -Recurse -Force }
 }
 
-# ── step 3: dsh.cmd install ───────────────────────────────────────────────
-Will "run: $DshCmd --profile web install (in $ProfileDir)"
+# ── step 3: pnpm de-registration ─────────────────────────────────────────
+# `dsh plugin --profile web remove <pkg>` is the clean path when present;
+# the profile package.json removal (step 1) is the source of truth and the
+# runner reconciles pnpm-lock on the next plugin install / DSH load.
+Will "reconcile pnpm state after removal (best-effort runner pass)"
 if ($Execute) {
     Push-Location $ProfileDir
-    try { & $DshCmd --profile web install } finally { Pop-Location }
-    if ($LASTEXITCODE -ne 0) { throw "dsh.cmd install failed ($LASTEXITCODE)" }
+    try {
+        & $DshCmd plugin --profile web remove 'dsh-wechat-share'
+        if ($LASTEXITCODE -ne 0) {
+            Say "[warn] dsh plugin remove unavailable/failed ($LASTEXITCODE) — package.json strip stands; lockfile reconciles on next load"
+        }
+    } finally { Pop-Location }
 }
 
 # ── step 4: unregister share target ──────────────────────────────────────
