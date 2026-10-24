@@ -45,7 +45,22 @@ function defaultInboxRoot() {
 
 // ── apply ─────────────────────────────────────────────────────────────────
 
+// Module-level wiring state: HMR may re-run apply() without disposing the
+// previous wiring (a failed bundle prepare mid-apply leaks routes/watchers).
+// apply() is idempotent: re-entry tears down the previous wiring first.
+let liveWiring = null;
+
 export function apply(ctx, config = {}) {
+  if (liveWiring) {
+    const prev = liveWiring;
+    liveWiring = null;
+    try {
+      prev.disposeAll();
+    } catch {
+      /* best effort */
+    }
+  }
+
   const onLog = (msg) => ctx.logger?.info?.(`[dsh-wechat-share] ${msg}`);
   const inboxRoot = config.inboxRoot ?? defaultInboxRoot();
 
@@ -92,6 +107,10 @@ export function apply(ctx, config = {}) {
   }
 
   // ── routes (conditional inject: webServer may be undefined at apply) ────
+  // webServer.register(route) returns an UNREGISTER function (host-webserver
+  // source: `return () => table.delete(route.path)`) — capture all three so
+  // the wiring teardown detaches them (idempotent apply on HMR re-runs).
+  const unregisters = [];
   if (typeof ctx.inject === "function") {
     ctx.inject(["webServer"], (httpCtx) => {
       const webServer = httpCtx.get("webServer");
@@ -100,7 +119,7 @@ export function apply(ctx, config = {}) {
         return;
       }
 
-      webServer.register({
+      const unregState = webServer.register({
         kind: "exact",
         path: "/wxshare/api/state",
         handler: async (_req, res) => {
@@ -121,8 +140,9 @@ export function apply(ctx, config = {}) {
           });
         },
       });
+      if (typeof unregState === "function") unregisters.push(unregState);
 
-      webServer.register({
+      const unregDeliver = webServer.register({
         kind: "exact",
         path: "/wxshare/api/deliver",
         handler: async (req, res) => {
@@ -162,8 +182,9 @@ export function apply(ctx, config = {}) {
           sendJson(res, 200, result);
         },
       });
+      if (typeof unregDeliver === "function") unregisters.push(unregDeliver);
 
-      webServer.register({
+      const unregDismiss = webServer.register({
         kind: "exact",
         path: "/wxshare/api/dismiss",
         handler: async (req, res) => {
@@ -187,6 +208,7 @@ export function apply(ctx, config = {}) {
           }
         },
       });
+      if (typeof unregDismiss === "function") unregisters.push(unregDismiss);
 
       onLog("routes mounted: /wxshare/api/state|deliver|dismiss");
     });
@@ -195,8 +217,21 @@ export function apply(ctx, config = {}) {
   }
 
   // disposer
-  return async function dispose() {
+  const disposeAll = async () => {
+    for (const unreg of unregisters.splice(0)) {
+      try {
+        unreg();
+      } catch {
+        /* best effort */
+      }
+    }
     await watcher.dispose();
+    onLog("wiring disposed");
+  };
+  liveWiring = { disposeAll };
+  return async function dispose() {
+    if (liveWiring) liveWiring = null;
+    await disposeAll();
     onLog("disposed");
   };
 }

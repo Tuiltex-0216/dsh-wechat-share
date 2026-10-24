@@ -147,10 +147,10 @@ if ($Execute) {
 Remove-Item -LiteralPath $nodeScriptFile -Force -ErrorAction SilentlyContinue
 
 # ── step 4: dsh.cmd install ───────────────────────────────────────────────
-Will "run: $DshCmd install (in $ProfileDir)"
+Will "run: $DshCmd --profile web install (in $ProfileDir)"
 if ($Execute) {
     Push-Location $ProfileDir
-    try { & $DshCmd install } finally { Pop-Location }
+    try { & $DshCmd --profile web install } finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { throw "dsh.cmd install failed ($LASTEXITCODE)" }
 }
 
