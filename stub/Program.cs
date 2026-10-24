@@ -121,6 +121,14 @@ public static class Program
             ShareReports.DataRetrieved(operation);
             ShareReports.Completed(operation);
             InboxWriter.Log(paths, $"share committed {committed.BatchId} files={committed.Manifest.Items.Count}");
+
+            // behavior c (user-chosen): wake DSH so the overlay appears.
+            // If DSH is already running with a window, the second instance
+            // exits via the single-instance lock after promoting the window.
+            if (DshWake.Wake())
+                InboxWriter.Log(paths, "dsh wake launched");
+            else
+                InboxWriter.Log(paths, "dsh wake unavailable (exe not found) — batch queued silently");
             return 0;
         }
         catch (Exception ex)
