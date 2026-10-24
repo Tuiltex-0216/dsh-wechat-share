@@ -84,21 +84,54 @@ export function apply(ctx, config = {}) {
     return pending.get(batchId) ?? null;
   }
 
+  // Session detail enrichment: the sessions snapshot store (host service
+  // `ctx.get("sessions")`, asar-verified: list.getSnapshot().byId[sessionId]
+  // → {sessionId, updatedAt, running, blank, cwd?, title?, ...}). Synchronous
+  // and cheap — safe to call per state request. Falls back to the session id
+  // suffix when a summary is missing or has no title.
+  function sessionSummaries() {
+    try {
+      const svc = ctx.get("sessions");
+      const byId = svc?.list?.getSnapshot?.()?.byId ?? {};
+      return byId;
+    } catch {
+      return {};
+    }
+  }
+
   async function projectWorkspaces() {
     const reg = ctx.get("workspaceRegistry");
     if (!reg?.list) return { workspaces: [], degraded: "workspaceRegistry" };
     try {
       const list = await reg.list();
-      const workspaces = (Array.isArray(list) ? list : []).map((ws) => ({
-        path: ws.path ?? ws.root ?? "",
-        title: ws.title ?? ws.name ?? path.basename(ws.path ?? ws.root ?? ""),
-        sessions: (ws.sessions ?? []).map((s) => ({
-          id: s.id ?? s.sessionId ?? "",
-          title: s.title ?? s.name ?? "",
-          cwd: s.cwd ?? s.directory ?? "",
-          updatedAt: s.updatedAt ?? s.lastActivityAt ?? null,
-        })),
-      }));
+      const byId = sessionSummaries();
+      const workspaces = (Array.isArray(list) ? list : []).map((ws) => {
+        // REAL host shape: sessionIds (string[]). Duck-typing fallback for
+        // object-array shapes (test harnesses).
+        let ids = [];
+        if (Array.isArray(ws.sessionIds)) ids = ws.sessionIds;
+        else if (Array.isArray(ws.sessions)) ids = ws.sessions.map((s) => (typeof s === "string" ? s : s.id ?? s.sessionId ?? ""));
+        const sessions = ids
+          .filter(Boolean)
+          .map((id) => {
+            const s = byId[id] ?? {};
+            const title = typeof s.title === "string" && s.title.length > 0 ? s.title : id.slice(-12);
+            return {
+              id,
+              title,
+              cwd: s.cwd ?? "",
+              updatedAt: s.updatedAt ?? s.lastPromptAt ?? null,
+              running: !!s.running,
+            };
+          });
+        // most recently active session first (updatedAt desc, nulls last)
+        sessions.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+        return {
+          path: ws.path ?? ws.root ?? "",
+          title: ws.title ?? ws.name ?? path.basename(ws.path ?? ws.root ?? ""),
+          sessions,
+        };
+      });
       return { workspaces, degraded: undefined };
     } catch (err) {
       onLog(`workspaceRegistry.list failed: ${err.message}`);

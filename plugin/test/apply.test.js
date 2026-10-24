@@ -9,8 +9,19 @@ import path from "node:path";
 const mod = await import("../index.js");
 const { apply, name, inject } = mod;
 
+// Realistic session ids (session-<uuid>, 36 chars) — the fallback title is
+// the 12-char id suffix, which is only recognizable at real id length.
+const ID_A = "session-aaaa1111-2222-3333-4444-555566667777";
+const ID_B = "session-bbbb1111-2222-3333-4444-555566667777";
+const ID_C = "session-cccc1111-2222-3333-4444-555566667777";
+
+// Workspace-local temp (the DSH sandbox confines node writes to the
+// session workspace; os.tmpdir() is outside it).
+const TEST_TMP = path.join(import.meta.dirname, "..", ".test-tmp");
+
 async function makeRoot() {
-  const root = await mkdtemp(path.join(tmpdir(), "wxshare-apply-"));
+  await mkdir(TEST_TMP, { recursive: true });
+  const root = await mkdtemp(path.join(TEST_TMP, "wxshare-apply-"));
   await mkdir(path.join(root, "Ready"), { recursive: true });
   await mkdir(path.join(root, "Done"), { recursive: true });
   return root;
@@ -38,27 +49,48 @@ function makeCtx(root, { withWebServer = true, deliverServices = null } = {}) {
   const webServer = withWebServer
     ? { register: (route) => routes.push(route) }
     : undefined;
+  // REAL host shape (asar-verified): workspaceRegistry.list() returns
+  // {workspaceId, path, title, sessionIds, createdAt, updatedAt} — IDs only.
+  // Session details come from the sessions snapshot store:
+  // ctx.get("sessions").list.getSnapshot().byId[sessionId] →
+  // {sessionId, updatedAt, running, blank, cwd?, title?, ...}
   const workspaces = [
     {
+      workspaceId: "ws-one",
       path: "C:\\ws\\one",
       title: "one",
-      sessions: [
-        { id: "sess-a", title: "Session A", cwd: "C:\\ws\\one\\a", updatedAt: "2026-10-24T01:00:00Z" },
-        { id: "sess-b", title: "Session B", cwd: "C:\\ws\\one\\b", updatedAt: "2026-10-24T02:00:00Z" },
-      ],
+      sessionIds: [ID_A, ID_B],
+      createdAt: "2026-10-20T00:00:00Z",
+      updatedAt: "2026-10-24T02:00:00Z",
     },
     {
+      workspaceId: "ws-two",
       path: "C:\\ws\\two",
       title: "two",
-      sessions: [{ id: "sess-c", title: "Session C", cwd: "C:\\ws\\two\\c", updatedAt: "2026-10-24T03:00:00Z" }],
+      sessionIds: [ID_C],
+      createdAt: "2026-10-21T00:00:00Z",
+      updatedAt: "2026-10-24T03:00:00Z",
     },
   ];
   const workspaceRegistry = { list: async () => workspaces };
+  const sessions = {
+    list: {
+      getSnapshot: () => ({
+        byId: {
+          [ID_A]: { sessionId: ID_A, title: "Session A", cwd: "C:\\ws\\one\\a", updatedAt: 1761405600000, running: false, blank: false },
+          [ID_B]: { sessionId: ID_B, title: "Session B", cwd: "C:\\ws\\one\\b", updatedAt: 1761409200000, running: true, blank: false },
+          // ID_C: no title in the snapshot (fallback path)
+          [ID_C]: { sessionId: ID_C, cwd: "C:\\ws\\two\\c", updatedAt: 1761412800000, running: false, blank: false },
+        },
+      }),
+    },
+  };
   const effects = [];
   const onHandlers = [];
   const services = {
     webServer,
     workspaceRegistry,
+    sessions,
     fileUploads: deliverServices?.fileUploads ?? {
       async uploadStream() {
         return { receiptId: "rcpt-1", file: {} };
@@ -149,6 +181,16 @@ test("stateRoute_returnsPendingAndWorkspaces", async () => {
     assert.equal(data.pending[0].batchId, "pending-1");
     assert.equal(data.workspaces.length, 2);
     assert.equal(data.workspaces[0].sessions.length, 2);
+    // enrichment from the sessions snapshot (real host shape)
+    const sa = data.workspaces[0].sessions.find((s) => s.id === ID_A);
+    assert.equal(sa.title, "Session A");
+    assert.ok(sa.updatedAt);
+    // most-recent-first ordering (ID_B has the larger updatedAt)
+    assert.equal(data.workspaces[0].sessions[0].id, ID_B);
+    // fallback: snapshot without a title → recognizable 12-char id suffix
+    const sc = data.workspaces[1].sessions.find((s) => s.id === ID_C);
+    assert.equal(sc.title, "555566667777");
+    assert.notEqual(sc.title, "");
     await dispose();
   } finally {
     await rm(root, { recursive: true, force: true });

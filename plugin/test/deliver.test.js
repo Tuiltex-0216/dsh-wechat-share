@@ -9,7 +9,10 @@ import path from "node:path";
 const { deliverBatch, buildPromptText, DeliverError } = await import("../lib/deliver.js");
 
 async function makeBatch(zipNames, sizes = {}) {
-  const root = await mkdtemp(path.join(tmpdir(), "wxshare-deliver-"));
+  // Workspace-local temp (DSH sandbox confines node writes to the session workspace).
+  const TEST_TMP = path.join(import.meta.dirname, "..", ".test-tmp");
+  await mkdir(TEST_TMP, { recursive: true });
+  const root = await mkdtemp(path.join(TEST_TMP, "wxshare-deliver-"));
   const dir = path.join(root, "Ready", "batch-1");
   await mkdir(dir, { recursive: true });
   const items = [];

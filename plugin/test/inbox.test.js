@@ -9,7 +9,10 @@ import path from "node:path";
 const { createInboxWatcher, scanReady, moveToDone } = await import("../lib/inbox.js");
 
 async function makeRoot() {
-  const root = await mkdtemp(path.join(tmpdir(), "wxshare-test-"));
+  // Workspace-local temp (DSH sandbox confines node writes to the session workspace).
+  const TEST_TMP = path.join(import.meta.dirname, "..", ".test-tmp");
+  await mkdir(TEST_TMP, { recursive: true });
+  const root = await mkdtemp(path.join(TEST_TMP, "wxshare-test-"));
   await mkdir(path.join(root, "Ready"), { recursive: true });
   await mkdir(path.join(root, "Done"), { recursive: true });
   return root;
