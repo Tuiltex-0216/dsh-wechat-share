@@ -23,6 +23,11 @@ public static class Program
             {
                 return await SelfTestAsync(args[1..]);
             }
+            if (args.Length > 2 && args[0] == "--gen-assets")
+            {
+                AssetGen.WriteLogos(args[1], args[2]);
+                return 0;
+            }
             return await HandleActivationAsync();
         }
         catch (Exception ex)

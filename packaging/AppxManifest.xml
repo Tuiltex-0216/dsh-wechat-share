@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DSH Harness share-target manifest.
+
+  WeChat-side visibility rules (empirical, from the proven WeChatBridge
+  manifest): a target is HIDDEN when its DisplayName contains a contiguous
+  微信/WeChat/Weixin substring, and DROPPED when SupportedFileTypes is narrow
+  or a single DataFormat is declared. This manifest keeps every user-visible
+  string free of those substrings and declares the broad shape.
+-->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap10 rescap">
+
+  <Identity Name="DshDesktop.ShareTarget" Publisher="CN=DSH Desktop Dev" Version="1.0.0.0" ProcessorArchitecture="neutral" />
+
+  <Properties>
+    <DisplayName>DSH Harness</DisplayName>
+    <PublisherDisplayName>DSH Desktop</PublisherDisplayName>
+    <Logo>Assets\Square150x150Logo.png</Logo>
+    <!-- Sparse package: content lives at -ExternalLocation (stub\dist), only
+         manifest + assets are inside the msix. This host's Msixvc deployment
+         path only accepts this shape (full packages fail 0x80070002) — same
+         shape as the proven WeChatBridge registration. -->
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+
+  <Resources>
+    <Resource Language="zh-cn" />
+    <Resource Language="en-us" />
+  </Resources>
+
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.19041.0" />
+  </Dependencies>
+
+  <Capabilities>
+    <rescap:Capability Name="runFullTrust" />
+    <rescap:Capability Name="unvirtualizedResources" />
+  </Capabilities>
+
+  <Applications>
+    <!--
+      One Application total (Share.Hub). WeChat enumerates every declared
+      Application as a separate menu row; the app asks for the destination
+      itself once the files are durable.
+    -->
+    <Application Id="Share.Hub" Executable="WeChatShare.Stub.exe" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
+      <uap:VisualElements
+        AppListEntry="none"
+        DisplayName="DSH Harness"
+        Description="接收聊天记录 ZIP，投递到 DSH 指定会话"
+        BackgroundColor="transparent"
+        Square44x44Logo="Assets\Square44x44Logo.png"
+        Square150x150Logo="Assets\Square150x150Logo.png" />
+      <Extensions>
+        <uap:Extension Category="windows.shareTarget">
+          <uap:ShareTarget Description="DSH Harness">
+            <uap:SupportedFileTypes>
+              <uap:SupportsAnyFileType />
+            </uap:SupportedFileTypes>
+            <uap:DataFormat>StorageItems</uap:DataFormat>
+            <uap:DataFormat>Text</uap:DataFormat>
+            <uap:DataFormat>URI</uap:DataFormat>
+            <uap:DataFormat>Bitmap</uap:DataFormat>
+          </uap:ShareTarget>
+        </uap:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>

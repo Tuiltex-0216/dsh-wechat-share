@@ -19,6 +19,7 @@
     <!-- .NET 5+ cannot reference Windows winmd directly (NETSDK1130);
          CsWinRT generates the C# projection from the SDK at build time. -->
     <PackageReference Include="Microsoft.Windows.CsWinRT" Version="2.3.1" />
+    <PackageReference Include="System.Drawing.Common" Version="8.0.10" />
   </ItemGroup>
   <ItemGroup>
     <CsWinRTIncludes Include="Windows.ApplicationModel" />
