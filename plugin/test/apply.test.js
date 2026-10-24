@@ -44,7 +44,7 @@ async function writeBatch(root, batchId = "batch-1") {
 }
 
 // Fake host ctx: get/inject/on/effect/logger per the plan's duck types.
-function makeCtx(root, { withWebServer = true, deliverServices = null } = {}) {
+async function makeCtx(root, { withWebServer = true, deliverServices = null, dshHome = null } = {}) {
   const routes = [];
   const webServer = withWebServer
     ? { register: (route) => routes.push(route) }
@@ -78,13 +78,41 @@ function makeCtx(root, { withWebServer = true, deliverServices = null } = {}) {
       getSnapshot: () => ({
         byId: {
           [ID_A]: { sessionId: ID_A, title: "Session A", cwd: "C:\\ws\\one\\a", updatedAt: 1761405600000, running: false, blank: false },
-          [ID_B]: { sessionId: ID_B, title: "Session B", cwd: "C:\\ws\\one\\b", updatedAt: 1761409200000, running: true, blank: false },
+          // ID_B: NO title in the live summary → must come from the
+          // session projection cache (rows.title.val)
+          [ID_B]: { sessionId: ID_B, cwd: "C:\\ws\\one\\b", updatedAt: 1761409200000, running: true, blank: false },
           // ID_C: no title in the snapshot (fallback path)
           [ID_C]: { sessionId: ID_C, cwd: "C:\\ws\\two\\c", updatedAt: 1761412800000, running: false, blank: false },
         },
       }),
     },
   };
+  // projcache files (real shape: record.rows.title.val +
+  // record.rows.sessionListMetadata.val.lastPromptAt) for title enrichment
+  if (dshHome) {
+    const pc = path.join(dshHome, "storages", "session_projcache", "sessions");
+    await mkdir(pc, { recursive: true });
+    await writeFile(path.join(pc, ID_B + ".json"), JSON.stringify({
+      version: 7,
+      record: {
+        identity: { formatVersion: 4, createdAt: 1761000000000, cwd: "C:\\ws\\one\\b", isSeeded: false, inheritedEventCount: 0 },
+        rows: {
+          title: { ver: 1, seq: 9, val: "ProjCache B 标题" },
+          sessionListMetadata: { ver: 1, seq: 9, val: { blank: false, lastPromptAt: 1761409500000 } },
+        },
+      },
+    }));
+    await writeFile(path.join(pc, ID_C + ".json"), JSON.stringify({
+      version: 7,
+      record: {
+        identity: { formatVersion: 4, createdAt: 1761000000001, cwd: "C:\\ws\\two\\c", isSeeded: false, inheritedEventCount: 0 },
+        rows: {
+          title: { ver: 1, seq: 9, val: "ProjCache C 标题" },
+          sessionListMetadata: { ver: 1, seq: 9, val: { blank: false, lastPromptAt: 1761412900000 } },
+        },
+      },
+    }));
+  }
   const effects = [];
   const onHandlers = [];
   const services = {
@@ -164,7 +192,7 @@ test("defaultInboxRoot_pointsAtStubInboxSubdir", () => {
 test("apply_registersThreeRoutes", async () => {
   const root = await makeRoot();
   try {
-    const ctx = makeCtx(root);
+    const ctx = await makeCtx(root);
     const config = { inboxRoot: root };
     const dispose = apply(ctx, config);
     await new Promise((r) => setTimeout(r, 100));
@@ -179,9 +207,10 @@ test("apply_registersThreeRoutes", async () => {
 
 test("stateRoute_returnsPendingAndWorkspaces", async () => {
   const root = await makeRoot();
+  const dshHome = await mkdtemp(path.join(TEST_TMP, "wxshare-dshhome-"));
   try {
-    const ctx = makeCtx(root);
-    const dispose = apply(ctx, { inboxRoot: root });
+    const ctx = await makeCtx(root, { dshHome });
+    const dispose = apply(ctx, { inboxRoot: root, dshHome });
     await writeBatch(root, "pending-1");
     await new Promise((r) => setTimeout(r, 400)); // watcher sweep
     const res = await callRoute(ctx, "/wxshare/api/state");
@@ -191,27 +220,34 @@ test("stateRoute_returnsPendingAndWorkspaces", async () => {
     assert.equal(data.pending.length, 1);
     assert.equal(data.pending[0].batchId, "pending-1");
     assert.equal(data.workspaces.length, 2);
-    assert.equal(data.workspaces[0].sessions.length, 2);
-    // enrichment from the sessions snapshot (real host shape)
-    const sa = data.workspaces[0].sessions.find((s) => s.id === ID_A);
+    const wsOne = data.workspaces.find((w) => w.title === "one");
+    const wsTwo = data.workspaces.find((w) => w.title === "two");
+    assert.equal(wsOne.sessions.length, 2);
+    // live summary title wins
+    const sa = wsOne.sessions.find((s) => s.id === ID_A);
     assert.equal(sa.title, "Session A");
-    assert.ok(sa.updatedAt);
-    // most-recent-first ordering (ID_B has the larger updatedAt)
-    assert.equal(data.workspaces[0].sessions[0].id, ID_B);
-    // fallback: snapshot without a title → recognizable 12-char id suffix
-    const sc = data.workspaces[1].sessions.find((s) => s.id === ID_C);
-    assert.equal(sc.title, "555566667777");
-    assert.notEqual(sc.title, "");
+    // live summary WITHOUT a title → projcache rows.title.val
+    const sb = wsOne.sessions.find((s) => s.id === ID_B);
+    assert.equal(sb.title, "ProjCache B 标题");
+    // projcache title + lastPromptAt enrichment
+    const sc = wsTwo.sessions.find((s) => s.id === ID_C);
+    assert.equal(sc.title, "ProjCache C 标题");
+    assert.equal(sc.updatedAt, 1761412900000);
+    // most-recent-first within a workspace (ID_B lastPromptAt > ID_A)
+    assert.equal(wsOne.sessions[0].id, ID_B);
+    // workspace ordering by latest activity (ws-two is more recent)
+    assert.equal(data.workspaces[0].title, "two");
     await dispose();
   } finally {
     await rm(root, { recursive: true, force: true });
+    await rm(dshHome, { recursive: true, force: true });
   }
 });
 
 test("deliverRoute_success_movesToDone", async () => {
   const root = await makeRoot();
   try {
-    const ctx = makeCtx(root);
+    const ctx = await makeCtx(root);
     const dispose = apply(ctx, { inboxRoot: root });
     await writeBatch(root, "del-1");
     await new Promise((r) => setTimeout(r, 400));
@@ -245,7 +281,7 @@ test("deliverRoute_failure_keepsBatch", async () => {
         },
       },
     };
-    const ctx = makeCtx(root, { deliverServices });
+    const ctx = await makeCtx(root, { deliverServices });
     const dispose = apply(ctx, { inboxRoot: root });
     await writeBatch(root, "fail-1");
     await new Promise((r) => setTimeout(r, 400));
@@ -265,7 +301,7 @@ test("deliverRoute_failure_keepsBatch", async () => {
 test("dismissRoute_movesToDoneDismissed", async () => {
   const root = await makeRoot();
   try {
-    const ctx = makeCtx(root);
+    const ctx = await makeCtx(root);
     const dispose = apply(ctx, { inboxRoot: root });
     await writeBatch(root, "dismiss-1");
     await new Promise((r) => setTimeout(r, 400));
@@ -286,7 +322,7 @@ test("dismissRoute_movesToDoneDismissed", async () => {
 test("apply_missingWebServer_degradesWithoutThrow", async () => {
   const root = await makeRoot();
   try {
-    const ctx = makeCtx(root, { withWebServer: false });
+    const ctx = await makeCtx(root, { withWebServer: false });
     let dispose;
     assert.doesNotThrow(() => {
       dispose = apply(ctx, { inboxRoot: root });
@@ -302,7 +338,7 @@ test("apply_missingWebServer_degradesWithoutThrow", async () => {
 test("disposer_stopsWatcher", async () => {
   const root = await makeRoot();
   try {
-    const ctx = makeCtx(root);
+    const ctx = await makeCtx(root);
     const dispose = apply(ctx, { inboxRoot: root });
     await new Promise((r) => setTimeout(r, 150));
     await writeBatch(root, "late-1");

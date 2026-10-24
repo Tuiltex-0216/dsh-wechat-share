@@ -10,6 +10,7 @@
 
 import path from "node:path";
 import os from "node:os";
+import { readFileSync } from "node:fs";
 
 import { createInboxWatcher, scanReady, moveToDone } from "./lib/inbox.js";
 import { deliverBatch, DeliverError } from "./lib/deliver.js";
@@ -102,6 +103,36 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  // Persistent session metadata from the projection cache
+  // (<dshHome>\storages\session_projcache\sessions\<id>.json — real shape:
+  // record.rows.title.val, record.rows.sessionListMetadata.val.lastPromptAt).
+  // The live summary store carries no titles, so the friendly labels (and
+  // recency ordering) come from here. Read lazily and cached per session id
+  // (the state route is polled every 2s — no re-reads).
+  const dshHome = config.dshHome ?? process.env.DSH_HOME ?? path.join(
+    process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming"),
+    "dsh-desktop", "harness"
+  );
+  const projCache = new Map(); // sessionId → {title?, lastPromptAt?, missing?}
+
+  function sessionProjMeta(sessionId) {
+    if (projCache.has(sessionId)) return projCache.get(sessionId);
+    let meta = { missing: true };
+    try {
+      const raw = readFileSync(path.join(dshHome, "storages", "session_projcache", "sessions", sessionId + ".json"), "utf8");
+      const doc = JSON.parse(raw);
+      const rows = doc?.record?.rows ?? {};
+      meta = {
+        title: typeof rows.title?.val === "string" && rows.title.val.length > 0 ? rows.title.val : undefined,
+        lastPromptAt: rows.sessionListMetadata?.val?.lastPromptAt ?? undefined,
+      };
+    } catch {
+      meta = { missing: true };
+    }
+    projCache.set(sessionId, meta);
+    return meta;
+  }
+
   async function projectWorkspaces() {
     const reg = ctx.get("workspaceRegistry");
     if (!reg?.list) return { workspaces: [], degraded: "workspaceRegistry" };
@@ -118,12 +149,18 @@ export function apply(ctx, config = {}) {
           .filter(Boolean)
           .map((id) => {
             const s = byId[id] ?? {};
-            const title = typeof s.title === "string" && s.title.length > 0 ? s.title : id.slice(-12);
+            const pm = sessionProjMeta(id);
+            const title =
+              (typeof s.title === "string" && s.title.length > 0 && s.title) ||
+              pm.title ||
+              id.slice(-12);
             return {
               id,
               title,
               cwd: s.cwd ?? "",
-              updatedAt: s.updatedAt ?? s.lastPromptAt ?? null,
+              // projcache lastPromptAt is the GUI sidebar's recency source
+              // (the "N 小时前" labels); prefer it over the live snapshot.
+              updatedAt: pm.lastPromptAt ?? s.updatedAt ?? s.lastPromptAt ?? null,
               running: !!s.running,
             };
           });
@@ -135,6 +172,11 @@ export function apply(ctx, config = {}) {
           sessions,
         };
       });
+      // most recently active workspace first
+      workspaces.sort(
+        (a, b) =>
+          (b.sessions[0]?.updatedAt ?? 0) - (a.sessions[0]?.updatedAt ?? 0)
+      );
       return { workspaces, degraded: undefined };
     } catch (err) {
       onLog(`workspaceRegistry.list failed: ${err.message}`);
