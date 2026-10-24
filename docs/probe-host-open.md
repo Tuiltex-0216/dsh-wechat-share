@@ -85,10 +85,21 @@ async function openHarness(url, focusIntent = "automatic") {
 
 ## 对 wxshare stub 的集成规格（T5-T8 消费）
 
-- **唤醒调用**：`ShellExecuteW(exePath, null, null, SW_SHOWNORMAL)`，exePath 解析顺序：
-  1. 注册表卸载键 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*` 中 DisplayName 含 "DSH Desktop" 的 InstallLocation + `DSH Desktop.exe`
-  2. 回退：`C:\Program Files\DSH Desktop\DSH Desktop.exe`
-- **触发时机（用户拍板的行为 c）**：share 批次落收件箱后，若 DSH 窗口不存在（唤醒调用前探测进程）→ 静默唤醒；DSH 侧插件（T5-T7）收到投递后按需弹 toast（`dsh:notification-show` 是 renderer 侧 API，由 DSH 内插件触发，stub 不直接调用）
+### 唤醒的 OS 边界（2026-10-24 实证，结论先于规格）
+
+- **share target 形态强制 win32App+mediumIL**：MakeAppx 80080204（win32App 必须配 mediumIL）+ 部署 0x80070490（纯 UWP Application 条目拒绝 windows.shareTarget 扩展）——两条都是 OS 强制，无绕过。
+- **medium IL 无法启动外部进程**：stub 内 `Process.Start`（UseShellExecute=true）启动 `C:\Program Files\DSH Desktop\DSH Desktop.exe` → Access denied（stub.log 2026-10-24 20:40 实证；runFullTrust capability 已声明但被 mediumIL 压过）。
+- **后果**：唤醒只在 DSH 关闭时才有意义——恰是 mediumIL 被阻塞的场景。**stub 侧唤醒不可实现**（在此组件形态内）。
+- **行为 c 的交付核心（已实现）**：静默排队——批次持久落收件箱，DSH 启动时插件 startup sweep 认领 → 浮层弹出。DSH 开着时转发 → 2s 轮询即时弹浮层（无需唤醒）。
+- **未来选项（backlog）**：常驻全信任助手（Run 键自启的小型 win32 watcher，loopback 监听 stub 的 wake 信号 → 由助手启动 DSH）——新组件+新失败面，v1 不做。
+
+### 唤醒调用规格（保留给未来常驻助手消费）
+
+- **唤醒调用**：`ShellExecuteW(exePath, null, null, SW_SHOWNORMAL)`，exePath 解析顺序（stub 内 `DshWake.ResolveExePath` 已实现 + `--wake-probe` 诊断模式）：
+  1. 运行中 DSH 进程的 `MainModule.FileName`（绕过 FS API；包上下文 File.Exists 全盲的实证教训）
+  2. 注册表卸载键 `HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*` 中 InstallLocation 含 "DSH Desktop" 的 + `DSH Desktop.exe`
+  3. 回退：`C:\Program Files\DSH Desktop\DSH Desktop.exe`
+- **触发时机**：share 批次落收件箱后，若 DSH 未运行 → 由常驻助手唤醒（见上）；DSH 侧插件收到投递后按需弹 toast（`dsh:notification-show` 是 renderer 侧 API，由 DSH 内插件触发，stub 不直接调用）
 - **preload 桥面（备查）**：`__DSH_HOST_PATHS__`、`__DSH_DIRECTORY_PICKER__`（directory-picker:open）、`__DSH_DESKTOP_NOTIFICATION__`（dsh:notification-show/close）、harness:*（restart/open-recovery/open-in-finder/renderer-healthy）、updates:*、safe-mode:*、mobile:* —— 全部为 renderer→main IPC，**无 main 侧可编程的外部开窗 IPC**（无深链协议唤醒；`registerDesktopScheme` 是内部资源协议 desktop:// 非唤醒通道）
 - **风险**：单实例行为依赖 Electron `requestSingleInstanceLock`（本机已实证）；若未来 DSH 改为常驻托盘不退出，stub 的「进程不存在才唤醒」探测需升级为「窗口不存在才唤醒」（枚举顶层窗口标题），当前不需要
 

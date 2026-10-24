@@ -48,6 +48,16 @@
       Application as a separate menu row; the app asks for the destination
       itself once the files are durable.
     -->
+    <!--
+      win32App + mediumIL is OS-mandated for a plain-exe share target:
+      MakeAppx 80080204 forces win32App↔mediumIL together, and deployment
+      0x80070490 rejects the shareTarget extension on a plain UWP entry
+      (both empirical, 2026-10-24). Consequence: the stub runs at medium IL
+      and CANNOT launch external processes (CreateProcess/ShellExecute →
+      Access denied) — so wake-on-share is not implementable from this
+      component (behavior c delivers its core: silent queue → DSH startup
+      sweep → overlay). A future resident full-trust helper could add wake.
+    -->
     <Application Id="Share.Hub" Executable="WeChatShare.Stub.exe" uap10:TrustLevel="mediumIL" uap10:RuntimeBehavior="win32App">
       <uap:VisualElements
         AppListEntry="none"

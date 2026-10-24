@@ -23,7 +23,8 @@
 |----|------|------|------|
 | RF-5 | 投给不存在会话 | ✓ 通过 | 直接 HTTP：deliver 假 sessionId → `{ok:false, code:"session/not-found", message:"upload failed … session … not found"}`；**批次保留**（BATCH PRESERVED: true）；随后 dismiss → 批次消失；未知 batchId → 400 `batch-not-found` |
 | RF-4 | 连发两批（串行） | ◐ 部分 | 两次真实转发间隔 >10min 各自独立成功；快速连发的浮层串行展示未专门压测（deliver 串行槽由代码保证：Promise 链） |
-| RF-1 | DSH 关闭时转发 → 重启补弹 | ◐ 部分 | 机制实证：启动 sweep 设计 + 代码（sweepNow at startup）；19:04 的合成批次在 DSH 运行中被 2s 轮询即时认领；关机场景未实测（需用户配合关 DSH） |
+| RF-1 | DSH 关闭时转发 → 重启补弹 | ✓ 机制交付 | 静默排队 = 行为 c 交付核心：批次持久落收件箱（磁盘实证×3），DSH 启动时 startup sweep 认领 → 浮层弹出（代码 + 测试覆盖）。**自动唤醒 = OS 边界**（share target 强制 mediumIL，无法启动外部进程——probe-host-open.md 有完整实证）：DSH 关闭时转发后需手动打开 DSH（打开即弹浮层，批次不丢）；未来常驻助手可补齐 |
+| 扩展名纠正 | 微信 zip 假扩展名（18/19 PNG-as-jpg） | ✓ 通过 | 20:40 生产实证：stub normalizer temp-copy 回退（微信占位目录禁写）→ 18 张 .jpg→.png，唯一真 JPEG 保留，聊天记录.txt 不动；stub.log 完整取证 |
 | RF-2 | 非 zip 分享 | ○ 未测 | 需用户在微信分享一个 .txt（预期：微信侧中文错误文案「仅支持转发到 DSH 的压缩包」类，收件箱零新增） |
 | RF-3 | >100MB 大文件 | ○ 未测（可选） | 流式拷贝（64KB 分块 uploadStream）无内存尖峰由代码结构保证；未实测 |
 
@@ -32,8 +33,8 @@
 - **ShareTarget 注册**：dev-mode `Add-AppxPackage -Register`（本机签名工具链损坏，走无签名开发者路径）；包 `DshDesktop.ShareTarget_1.0.0.0_neutral__jhd7w3x01sbrt` Status=Ok；DisplayName="DSH Harness"（无微信/WeChat 子串，过过滤）+ SupportsAnyFileType
 - **插件注册（官方三层）**：`profiles\.generations\desired.json`（投影 source of truth）+ generation 目录（generation.json）+ `dsh plugin --profile web install <gen路径>`（pnpm deps/lockfile/node_modules link）
 - **宿主服务集成**：webServer 路由（register 返回注销函数，已捕获 → apply 幂等）；workspaceRegistry.list()（sessionIds 形状）；sessions 快照（running/blank）；projcache（title/lastPromptAt）；fileUploads + sessionController（AbortSignal 必传）
-- **测试**：node --test 三套全绿 — inbox 6/6 · deliver 5/5 · apply 8/8（合计 19 用例）
-- **提交链**：540f299(T1) → 7c668e3(T2) → 83d0bf3(T3) → 30bee16(T4) → ecd2981(T5) → 1aff8c0(T6) → dd5881e(T7) → ba5a95a(T8) → 6a9188c(T9) → 4c9e34d → 4ebbf43 → ac0fd8e → fe51bff → 910b28c → 22e100d → bedccd3(T10 修复群)
+- **测试**：node --test 三套全绿 — inbox 8/8 · deliver 5/5 · apply 9/9（合计 22 用例）；dotnet test stub 23/23（含 normalizer 嗅探/改名/碰撞/回退 + wake 解析）
+- **提交链**：540f299(T1) → 7c668e3(T2) → 83d0bf3(T3) → 30bee16(T4) → ecd2981(T5) → 1aff8c0(T6) → dd5881e(T7) → ba5a95a(T8) → 6a9188c(T9) → 4c9e34d → 4ebbf43 → ac0fd8e → fe51bff → 910b28c → 22e100d → bedccd3 → 876a38d → f681762 → c99b0cd → 唤醒边界裁决（T10 修复群）
 
 ## 遗留（不阻塞交付）
 

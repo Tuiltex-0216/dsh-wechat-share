@@ -150,11 +150,15 @@ public static class Program
             ShareReports.Completed(operation);
             InboxWriter.Log(paths, $"share committed {committed.BatchId} files={committed.Manifest.Items.Count}");
 
-            // behavior c (user-chosen): wake DSH so the overlay appears.
-            // If DSH is already running with a window, the second instance
-            // exits via the single-instance lock after promoting the window.
-            var (started, wakeDiag) = DshWake.Wake();
-            InboxWriter.Log(paths, (started ? "dsh wake launched: " : "dsh wake unavailable: ") + wakeDiag);
+            // behavior c (user-chosen): silent queue. The batch is durable in
+            // the inbox; the DSH plugin's startup sweep surfaces it (overlay)
+            // the next time DSH runs. Wake-on-share is NOT attempted: the
+            // share target runs at medium IL (OS-mandated for plain-exe
+            // share targets) and cannot launch external processes — and wake
+            // is only needed when DSH is closed, exactly the blocked case.
+            // (DshWake/--wake-probe remain available for diagnostics and a
+            // future resident full-trust helper.)
+            InboxWriter.Log(paths, "queued for DSH startup sweep (silent-queue behavior; wake is medium-IL-blocked)");
             return 0;
         }
         catch (Exception ex)
