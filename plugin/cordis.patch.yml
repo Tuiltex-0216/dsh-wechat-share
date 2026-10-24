@@ -1,0 +1,8 @@
+# dsh-wechat-share bundle patch (cordis).
+# Insert the plugin row into the live bundle. config starts empty;
+# inboxRoot may override the default %APPDATA%\dsh-desktop\harness\wxshare.
+- insert:
+    - id: dsh-wechat-share
+      name: dsh-wechat-share
+      config:
+        inboxRoot: null

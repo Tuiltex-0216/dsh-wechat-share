@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "WeChat Share",
+    "description": "Receive chat-record ZIPs forwarded from WeChat and deliver them to a chosen workspace session."
+  }
+}

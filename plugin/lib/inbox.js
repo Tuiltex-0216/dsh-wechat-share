@@ -237,6 +237,7 @@ export function createInboxWatcher({
   async function start() {
     await mkdir(readyDir(root), { recursive: true });
     await mkdir(doneDir(root), { recursive: true });
+    if (disposed) return;
     // startup sweep: pick up batches dropped while DSH was not running
     sweepNow();
     try {
@@ -250,23 +251,31 @@ export function createInboxWatcher({
           watchHandle?.close();
         } catch {}
         watchHandle = null;
-        startPolling();
+        if (!disposed) startPolling();
       });
+      // dispose() may have run while start() was awaiting mkdir
+      if (disposed && watchHandle) {
+        try {
+          watchHandle.close();
+        } catch {}
+        watchHandle = null;
+      }
     } catch (err) {
       if (!watchFallbackLogged) {
         watchFallbackLogged = true;
         onLog(`fs.watch unavailable (${err.message}); falling back to ${POLL_FALLBACK_MS}ms polling`);
       }
-      startPolling();
+      if (!disposed) startPolling();
     }
   }
 
-  void start();
+  const startPromise = start();
 
   return {
     sweepNow,
     async dispose() {
       disposed = true;
+      await startPromise.catch(() => {}); // watch setup settled before we close it
       if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;

@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <!-- DSH blue arrow mark, simplified original path data -->
+  <rect width="48" height="48" rx="10" fill="#1f6feb"/>
+  <path d="M14 34 L24 12 L34 34 L28.5 34 L24 23 L19.5 34 Z" fill="#ffffff"/>
+  <circle cx="24" cy="38" r="2.4" fill="#9ecbff"/>
+</svg>
