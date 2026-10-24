@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 const mod = await import("../index.js");
-const { apply, name, inject } = mod;
+const { apply, name, inject, defaultInboxRoot } = mod;
 
 // Realistic session ids (session-<uuid>, 36 chars) — the fallback title is
 // the 12-char id suffix, which is only recognizable at real id length.
@@ -149,6 +149,17 @@ async function callRoute(ctx, pathName, { method = "GET", body } = {}) {
   await route.handler(req, res);
   return res;
 }
+
+test("defaultInboxRoot_pointsAtStubInboxSubdir", () => {
+  // InboxPaths.cs: InboxRoot = Path.Combine(Root, "inbox") — the watcher
+  // root must include the inbox level (production bug: watched wxshare\Ready
+  // while the stub wrote wxshare\inbox\Ready).
+  const root = defaultInboxRoot();
+  assert.ok(
+    root.replace(/\//g, "\\").endsWith(path.join("dsh-desktop", "harness", "wxshare", "inbox")),
+    `defaultInboxRoot ${root} must end with dsh-desktop\harness\wxshare\inbox`
+  );
+});
 
 test("apply_registersThreeRoutes", async () => {
   const root = await makeRoot();

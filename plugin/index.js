@@ -38,9 +38,12 @@ async function readJsonBody(req) {
   }
 }
 
-function defaultInboxRoot() {
+// The stub writes to <Root>\inbox\{Ready,Staging,Done} (InboxPaths.cs:
+// InboxRoot = Path.Combine(Root, "inbox")); the watcher root must be the
+// INBOX directory, not the wxshare root.
+export function defaultInboxRoot() {
   const appdata = process.env.APPDATA ?? path.join(os.homedir(), "AppData", "Roaming");
-  return path.join(appdata, "dsh-desktop", "harness", "wxshare");
+  return path.join(appdata, "dsh-desktop", "harness", "wxshare", "inbox");
 }
 
 // ── apply ─────────────────────────────────────────────────────────────────
