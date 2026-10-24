@@ -138,6 +138,21 @@ public sealed class InboxWriterTests : IDisposable
     }
 
     [Fact]
+    public void InboxPaths_Default_HonorsWxshareRootEnv()
+    {
+        var previous = Environment.GetEnvironmentVariable("WXSHARE_ROOT");
+        try
+        {
+            Environment.SetEnvironmentVariable("WXSHARE_ROOT", @"C:\fake\wxshare-root");
+            Assert.Equal(@"C:\fake\wxshare-root", InboxPaths.Default().Root);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WXSHARE_ROOT", previous);
+        }
+    }
+
+    [Fact]
     public void Manifest_Json_UsesContractLowerCaseKeys()
     {
         // Cross-language contract (Global Constraints): the DSH plugin host
@@ -159,5 +174,7 @@ public sealed class InboxWriterTests : IDisposable
         Assert.Contains("\"contentType\"", json);
         Assert.DoesNotContain("\"RelativePath\"", json);
         Assert.DoesNotContain("\"SchemaVersion\"", json);
+        // Contract: createdAt is ISO-8601 UTC with a Z suffix (not +00:00).
+        Assert.Matches(@"""createdAt""\s*:\s*""\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z""", json);
     }
 }

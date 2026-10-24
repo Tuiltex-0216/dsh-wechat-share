@@ -14,12 +14,24 @@ public sealed record InboxPaths
     public string DoneDir => Path.Combine(InboxRoot, "Done");
     public string LogsDir => Path.Combine(Root, "logs");
 
-    public static InboxPaths Default() => new()
+    /// <summary>
+    /// Default root: %APPDATA%\dsh-desktop\harness\wxshare. The WXSHARE_ROOT
+    /// environment override exists so sandboxed test/selftest runs (and CI)
+    /// can point the inbox at a writable location without touching product
+    /// layout; production launches by the share host never set it.
+    /// </summary>
+    public static InboxPaths Default()
     {
-        Root = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
-            "dsh-desktop", "harness", "wxshare"),
-    };
+        var overrideRoot = Environment.GetEnvironmentVariable("WXSHARE_ROOT");
+        return new()
+        {
+            Root = string.IsNullOrWhiteSpace(overrideRoot)
+                ? Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "dsh-desktop", "harness", "wxshare")
+                : Path.GetFullPath(overrideRoot),
+        };
+    }
 
     /// <summary>Test/override constructor: any root directory.</summary>
     public static InboxPaths ForRoot(string root) => new() { Root = Path.GetFullPath(root) };
