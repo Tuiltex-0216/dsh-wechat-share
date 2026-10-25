@@ -1,0 +1,52 @@
+{
+  "name": "dsh-wechat-share",
+  "version": "1.0.0",
+  "description": "Forward WeChat chat records into DSH sessions: a Windows share target captures the merged-forward ZIP, an in-GUI overlay picks the destination session, and the ZIP arrives as a file-attachment message the agent can unpack and read.",
+  "type": "module",
+  "keywords": [
+    "dsh",
+    "plugin",
+    "wechat",
+    "share-target",
+    "inbox"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tuiltex-0216/dsh-wechat-share.git"
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "lib/",
+    "locale/",
+    "icon.svg",
+    "cordis.patch.yml",
+    "package.json"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "dsh": ">=0.2.1-0 <0.2.2-0 || >=0.2.2-rc.0 <0.3.0-0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh": ">=0.2.1-0 <0.2.2-0 || >=0.2.2-rc.0 <0.3.0-0"
+  },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh": {
+      "optional": true
+    }
+  },
+  "dsh": {
+    "client": {
+      "platform": "web"
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

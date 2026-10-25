@@ -80,10 +80,18 @@ if ($Execute) {
 }
 Remove-Item -LiteralPath $nodeScriptFile -Force -ErrorAction SilentlyContinue
 
-# ── step 2: generation dirs ───────────────────────────────────────────────
+# ── step 2: generation dirs + registry rows ───────────────────────────────
 foreach ($g in $genDirs) {
-    Will "delete generation dir $g"
-    if ($Execute) { Remove-Item -LiteralPath $g -Recurse -Force }
+    Will "delete generation dir $g (+ desired.json row)"
+    if ($Execute) {
+        Remove-Item -LiteralPath $g -Recurse -Force
+        $desiredPath = Join-Path (Split-Path (Split-Path $g -Parent) -Parent) 'desired.json'
+        if (Test-Path -LiteralPath $desiredPath) {
+            $desired = @(Get-Content -LiteralPath $desiredPath -Raw | ConvertFrom-Json)
+            $desired = @($desired | Where-Object { $_ -ne (Split-Path $g -Leaf) })
+            $desired | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $desiredPath -Encoding utf8
+        }
+    }
 }
 
 # ── step 3: pnpm de-registration ─────────────────────────────────────────

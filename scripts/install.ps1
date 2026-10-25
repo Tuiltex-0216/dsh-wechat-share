@@ -27,7 +27,9 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$pluginDir = Join-Path $repoRoot 'plugin'
+# Repo layout (market-ready): the plugin package IS the repo root
+# (package.json with dsh.bundle at root — the awesome-dsh-plugin CI shape).
+$pluginDir = $repoRoot
 $harnessHome = Join-Path $env:APPDATA 'dsh-desktop\harness'
 if (-not $ProfileDir) { $ProfileDir = Join-Path $harnessHome 'profiles\web' }
 if (-not $DshCmd) { $DshCmd = Join-Path $env:APPDATA 'npm\dsh.cmd' }
@@ -113,10 +115,17 @@ if ($registered) {
     }
 }
 
-# ── step 2: generation dir ────────────────────────────────────────────────
-Will "copy plugin package → $genDir"
+# ── step 2: generation dir + registry (three-layer official registration) ─
+# Layer 1: the generation dir (package files, hash-pinned name)
+# Layer 2: generation.json (the registry's per-dir meta — {pluginName, version})
+# Layer 3: profiles\.generations\desired.json (the projection source of truth
+#          — without this row the shell SWEEPS the dir on next boot)
+# Layer 4: pnpm (step 3+4: deps/override/bundles/projection + dsh plugin install)
+$genRoot = Split-Path $genDir -Parent   # ...\.generations\live\<genDirName>
+$desiredPath = Join-Path (Split-Path (Split-Path $genRoot -Parent) -Parent) 'desired.json'
+Will "copy plugin package → $genDir (+ generation.json + desired.json row)"
 if ($Execute) {
-    if (Test-Path -LiteralPath $genDir) { Remove-Item -LiteralPath $genDir -Recurse -Force }
+    if (Test-Path -LiteralPath $genRoot) { Remove-Item -LiteralPath $genRoot -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $genDir | Out-Null
     # Y2: same file set as the hash (Get-PackageFiles) — no .test-tmp/bin/obj
     Get-PackageFiles $pluginDir | ForEach-Object {
@@ -124,6 +133,18 @@ if ($Execute) {
         $dest = Join-Path $genDir $rel
         New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
         Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
+    }
+    # layer 2: generation.json
+    [IO.File]::WriteAllText((Join-Path $genRoot 'generation.json'),
+        "{`"pluginName`": `"$pluginName`", `"version`": `"$pluginVersion`"}" + [Environment]::NewLine)
+    # layer 3: desired.json row (idempotent append)
+    $desired = @()
+    if (Test-Path -LiteralPath $desiredPath) {
+        $desired = @(Get-Content -LiteralPath $desiredPath -Raw | ConvertFrom-Json)
+    }
+    if ($desired -notcontains $genDirName) {
+        $desired += $genDirName
+        $desired | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $desiredPath -Encoding utf8
     }
 }
 
