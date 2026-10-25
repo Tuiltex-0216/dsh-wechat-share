@@ -36,6 +36,13 @@
 - **测试**：node --test 三套全绿 — inbox 8/8 · deliver 5/5 · apply 9/9（合计 22 用例）；dotnet test stub 23/23（含 normalizer 嗅探/改名/碰撞/回退 + wake 解析）
 - **提交链**：540f299(T1) → 7c668e3(T2) → 83d0bf3(T3) → 30bee16(T4) → ecd2981(T5) → 1aff8c0(T6) → dd5881e(T7) → ba5a95a(T8) → 6a9188c(T9) → 4c9e34d → 4ebbf43 → ac0fd8e → fe51bff → 910b28c → 22e100d → bedccd3 → 876a38d → f681762 → c99b0cd → 唤醒边界裁决（T10 修复群）
 
+## 生产事故记录（2026-10-25：安装脚本 BOM 损坏 desired.json → harness 启动失败）
+
+- **现象**：harness 无法启动，日志 `Generation pointer is invalid JSON: Unexpected token '锘?'`（UTF-8 BOM 的 GBK 误读），profile 维护被阻、进入安全模式循环。
+- **根因**：`install.ps1` 用 PowerShell 5.1 的 `Set-Content -Encoding utf8` 写壳托管的 `desired.json`——该编码**带 BOM**，壳的严格 JSON 解析拒收；壳的恢复路径又把文件重写为部分解析片段（损坏放大）。修复过程中第二陷阱暴露：PS 5.1 `ConvertTo-Json` 对单元素数组解包为标量、对嵌套数组序列化出 `{value,Count}` 形状。连带发现：崩溃恢复后的 harness 子进程 PATH 缺 `.desktop-bin`，`dsh plugin install` 的 pnpm 按名解析失败。
+- **修复**（提交 753279e，全部活体验证）：desired.json 的所有读写改走 **node JSON DOM**（确定性、无 BOM、写入前自验证、原子 tmp+rename、.bak）；两个脚本对 `.desktop-bin` 做 PATH 防御；dry-run 证明字节级零改动。
+- **教训**：壳托管的状态文件不用 PS 5.1 的 JSON cmdlet 写（BOM/标量解包/嵌套形状三陷阱）；对宿主状态机的写操作必须「写入前验证 + 原子替换 + 备份」。
+
 ## 遗留（不阻塞交付）
 
 1. **AXCD 签名公式未破**（本机 CNG/signtool 损坏环境）— 生产签名路径在正常机器上补齐即可；当前 dev-mode 注册依赖本机开发者模式开关（重装系统需重开）
