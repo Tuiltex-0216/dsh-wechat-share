@@ -22,6 +22,15 @@ $pluginName = 'dsh-wechat-share'
 if (-not $ProfileDir) { $ProfileDir = Join-Path $env:APPDATA 'dsh-desktop\harness\profiles\web' }
 if (-not $DshCmd) { $DshCmd = Join-Path $env:APPDATA 'npm\dsh.cmd' }
 $failures = 0
+# dsh plugin forwarding resolves `pnpm` by name — guarantee the shell's
+# .desktop-bin shim dir is on PATH (post-recovery harnesses omit it;
+# incident 2026-10-25).
+$node = Join-Path $env:APPDATA 'dsh-desktop\harness\plugins\rea-bundle\vendor\node\node.exe'
+if (-not (Test-Path -LiteralPath $node)) { $node = 'node' }
+$desktopBin = Join-Path $env:APPDATA 'dsh-desktop\harness\.desktop-bin'
+if ((Test-Path -LiteralPath $desktopBin) -and ($env:Path -notlike "*$desktopBin*")) {
+    $env:Path = "$desktopBin;$env:Path"
+}
 
 function Say([string]$m) { Write-Output $m }
 function Check([string]$what, [bool]$ok, [string]$detail = '') {
@@ -81,15 +90,35 @@ if ($Execute) {
 Remove-Item -LiteralPath $nodeScriptFile -Force -ErrorAction SilentlyContinue
 
 # ── step 2: generation dirs + registry rows ───────────────────────────────
+# desired.json via NODE (same rationale as install.ps1: PS 5.1's
+# ConvertTo-Json scalar-unwrap corrupted this file in production).
+$desiredRemoveScript = @'
+const fs = require('fs');
+const [p, row] = process.argv.slice(2);
+if (!fs.existsSync(p)) { console.log('desired.json absent — nothing to do'); process.exit(0); }
+const raw = fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '');
+const parsed = JSON.parse(raw);
+let rows = Array.isArray(parsed) ? parsed.map(String) : [String(parsed)];
+rows = rows.filter(r => r !== row);
+const json = JSON.stringify(rows, null, 2) + '\n';
+JSON.parse(json);
+const tmp = p + '.tmp-node';
+fs.writeFileSync(tmp, json, 'utf8');
+fs.copyFileSync(p, p + '.bak-node');
+fs.renameSync(tmp, p);
+console.log('desired.json: removed row, ' + rows.length + ' rows left');
+'@
 foreach ($g in $genDirs) {
     Will "delete generation dir $g (+ desired.json row)"
     if ($Execute) {
         Remove-Item -LiteralPath $g -Recurse -Force
         $desiredPath = Join-Path (Split-Path (Split-Path $g -Parent) -Parent) 'desired.json'
         if (Test-Path -LiteralPath $desiredPath) {
-            $desired = @(Get-Content -LiteralPath $desiredPath -Raw | ConvertFrom-Json)
-            $desired = @($desired | Where-Object { $_ -ne (Split-Path $g -Leaf) })
-            $desired | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $desiredPath -Encoding utf8
+            $tmpScript = Join-Path $env:TEMP "wxshare-desired-rm-$([guid]::NewGuid().ToString('N')).js"
+            Set-Content -LiteralPath $tmpScript -Value $desiredRemoveScript -Encoding ascii
+            & $node $tmpScript $desiredPath (Split-Path $g -Leaf)
+            if ($LASTEXITCODE -ne 0) { throw "desired.json row removal failed ($LASTEXITCODE)" }
+            Remove-Item -LiteralPath $tmpScript -Force -ErrorAction SilentlyContinue
         }
     }
 }

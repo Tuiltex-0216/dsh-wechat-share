@@ -35,6 +35,14 @@ if (-not $ProfileDir) { $ProfileDir = Join-Path $harnessHome 'profiles\web' }
 if (-not $DshCmd) { $DshCmd = Join-Path $env:APPDATA 'npm\dsh.cmd' }
 $node = Join-Path $env:APPDATA 'dsh-desktop\harness\plugins\rea-bundle\vendor\node\node.exe'
 if (-not (Test-Path -LiteralPath $node)) { $node = 'node' }
+# dsh plugin install forwards to `pnpm` BY NAME (spawnSync PATH lookup).
+# The desktop shell normally puts its .desktop-bin shim dir on child PATHs,
+# but post-recovery harnesses have been observed WITHOUT it (2026-10-25
+# incident: "'pnpm' is not recognized"). Guarantee it defensively.
+$desktopBin = Join-Path $env:APPDATA 'dsh-desktop\harness\.desktop-bin'
+if ((Test-Path -LiteralPath $desktopBin) -and ($env:Path -notlike "*$desktopBin*")) {
+    $env:Path = "$desktopBin;$env:Path"
+}
 
 $pluginName = 'dsh-wechat-share'
 $pluginVersion = '1.0.0'
@@ -160,23 +168,37 @@ if ($Execute) {
         [IO.File]::WriteAllText((Join-Path $gRoot 'generation.json'),
             "{`"pluginName`": `"$pluginName`", `"version`": `"$pluginVersion`"}" + [Environment]::NewLine)
     }
-    # desired.json row (idempotent append) — protects both trees from sweeps
-    $desired = @()
-    if (Test-Path -LiteralPath $desiredPath) {
-        $desired = @(Get-Content -LiteralPath $desiredPath -Raw | ConvertFrom-Json)
-    }
-    if ($desired -notcontains $genDirName) {
-        $desired += $genDirName
-        $desired | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $desiredPath -Encoding utf8
-    }
-    # supersede: drop the previous generation's desired row (old dirs get
-    # swept by the shell at next boot)
-    $oldRows = @($desired | Where-Object { $_ -like "$pluginName+$pluginVersion+*" -and $_ -ne $genDirName })
-    if ($oldRows.Count -gt 0) {
-        $desired = @($desired | Where-Object { $_ -notin $oldRows })
-        $desired | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $desiredPath -Encoding utf8
-        Say "[do]    superseded desired rows: $($oldRows -join ', ')"
-    }
+    # desired.json row — NODE, not PowerShell. PS 5.1's ConvertTo-Json
+    # unwraps single-element arrays to scalars and mangles nested arrays
+    # (both observed corrupting this file in production, 2026-10-25); node's
+    # JSON.parse/stringify is deterministic, BOM-less, and atomic here.
+    # Ensures the new row, supersedes older same-plugin rows, and validates
+    # the result parses before it replaces the live file.
+    $desiredScript = @'
+const fs = require('fs');
+const [p, genDirName, pluginName, version] = process.argv.slice(2);
+let rows = [];
+if (fs.existsSync(p)) {
+  const raw = fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '');
+  const parsed = JSON.parse(raw);
+  rows = Array.isArray(parsed) ? parsed.map(String) : [String(parsed)];
+}
+rows = rows.filter(r => !(r.startsWith(pluginName + '+' + version + '+') && r !== genDirName));
+if (!rows.includes(genDirName)) rows.push(genDirName);
+rows.sort();
+const json = JSON.stringify(rows, null, 2) + '\n';
+JSON.parse(json); // validate before touching the live file
+const tmp = p + '.tmp-node';
+fs.writeFileSync(tmp, json, 'utf8');
+if (fs.existsSync(p)) fs.copyFileSync(p, p + '.bak-node');
+fs.renameSync(tmp, p);
+console.log('desired.json: ' + rows.length + ' rows (superseded older ' + pluginName + ' rows)');
+'@
+    $desiredScriptFile = Join-Path $env:TEMP "wxshare-desired-$([guid]::NewGuid().ToString('N')).js"
+    Set-Content -LiteralPath $desiredScriptFile -Value $desiredScript -Encoding ascii
+    & $node $desiredScriptFile $desiredPath $genDirName $pluginName $pluginVersion
+    if ($LASTEXITCODE -ne 0) { throw "desired.json update failed ($LASTEXITCODE)" }
+    Remove-Item -LiteralPath $desiredScriptFile -Force -ErrorAction SilentlyContinue
 }
 
 # ── step 3: profile package.json (4 injection points, node JSON DOM) ─────
