@@ -73,15 +73,25 @@ if ($failures -gt 0) {
 }
 
 # ── deterministic hash12 over the package files ───────────────────────────
-# Y2 (review): exclude test/build junk — Get-ChildItem -Recurse DOES include
-# .test-tmp (and pwsh 7 Copy-Item <dir>\* copies it too), so a local test run
-# used to drift the hash12 → new generation dir per install. The hash and the
-# copy below must cover the SAME file set (哈希所及 = 拷贝所及).
+# The hash covers EXACTLY the npm `files` manifest (package.json's "files"
+# array + package.json itself) — the real shippable content. Root-layout
+# lesson (2026-10-25): hashing the whole repo root dragged in .git (hash
+# drifted on every commit), packaging/logs (open-file lock failures), and
+# build junk. 哈希所及 = 拷贝所及 = files 清单.
 function Get-PackageFiles([string]$dir) {
-    Get-ChildItem -LiteralPath $dir -Recurse -File -Force | Where-Object {
-        $rel = $_.FullName.Substring($dir.Length + 1).Replace('\', '/')
-        -not ($rel -like '.test-tmp/*' -or $rel -like '*/.test-tmp/*' -or $rel -like 'bin/*' -or $rel -like 'obj/*' -or $rel -like '*/bin/*' -or $rel -like '*/obj/*')
+    $pkg = Get-Content -LiteralPath (Join-Path $dir 'package.json') -Raw | ConvertFrom-Json
+    $files = @($pkg.files) + @('package.json')
+    $out = @()
+    foreach ($f in $files) {
+        $norm = $f.TrimEnd('/', '\')
+        $full = Join-Path $dir $norm
+        if (Test-Path -LiteralPath $full -PathType Container) {
+            $out += Get-ChildItem -LiteralPath $full -Recurse -File
+        } elseif (Test-Path -LiteralPath $full) {
+            $out += Get-Item -LiteralPath $full
+        }
     }
+    return $out
 }
 $sha = [System.Security.Cryptography.SHA256]::Create()
 $combined = New-Object System.Text.StringBuilder
@@ -116,28 +126,41 @@ if ($registered) {
 }
 
 # ── step 2: generation dir + registry (three-layer official registration) ─
-# Layer 1: the generation dir (package files, hash-pinned name)
-# Layer 2: generation.json (the registry's per-dir meta — {pluginName, version})
-# Layer 3: profiles\.generations\desired.json (the projection source of truth
-#          — without this row the shell SWEEPS the dir on next boot)
-# Layer 4: pnpm (step 3+4: deps/override/bundles/projection + dsh plugin install)
-$genRoot = Split-Path $genDir -Parent   # ...\.generations\live\<genDirName>
-$desiredPath = Join-Path (Split-Path (Split-Path $genRoot -Parent) -Parent) 'desired.json'
-Will "copy plugin package → $genDir (+ generation.json + desired.json row)"
+# Two generation trees exist (empirical, 2026-10-24):
+#   REGISTRY tree: profiles\.generations\live\   — canonical dirs +
+#               generation.json + desired.json (the projection source of
+#               truth; dirs missing from desired.json are swept at boot)
+#   WEB tree:      profiles\web\.generations\live\ — what the node_modules
+#               junction points at (what the harness actually loads)
+# The shell's projection rebuilds the WEB tree FROM the registry — the pnpm
+# runner's "restored N generation projections" step DELETES web-tree dirs
+# that are not in desired.json (learned the hard way: a web-only install
+# vanished mid-install). So: write BOTH trees + the registry row, in that
+# order, BEFORE the pnpm step.
+$harnessHome2 = Join-Path $env:APPDATA 'dsh-desktop\harness'
+$regLiveRoot = Join-Path $harnessHome2 'profiles\.generations\live'
+$regGenRoot = Join-Path $regLiveRoot $genDirName
+$regGenDir = Join-Path $regGenRoot "node_modules\$pluginName"
+$desiredPath = Join-Path $harnessHome2 'profiles\.generations\desired.json'
+$webGenRoot = Split-Path $genDir -Parent
+Will "copy plugin package → registry tree ($regGenDir) + web tree ($genDir) + desired.json row"
 if ($Execute) {
-    if (Test-Path -LiteralPath $genRoot) { Remove-Item -LiteralPath $genRoot -Recurse -Force }
-    New-Item -ItemType Directory -Force -Path $genDir | Out-Null
-    # Y2: same file set as the hash (Get-PackageFiles) — no .test-tmp/bin/obj
-    Get-PackageFiles $pluginDir | ForEach-Object {
-        $rel = $_.FullName.Substring($pluginDir.Length + 1)
-        $dest = Join-Path $genDir $rel
-        New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
-        Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
+    foreach ($pair in @(@($regGenRoot, $regGenDir), @($webGenRoot, $genDir))) {
+        $gRoot = $pair[0]; $gDir = $pair[1]
+        if (Test-Path -LiteralPath $gRoot) { Remove-Item -LiteralPath $gRoot -Recurse -Force }
+        New-Item -ItemType Directory -Force -Path $gDir | Out-Null
+        # same file set as the hash (Get-PackageFiles = the npm files manifest)
+        Get-PackageFiles $pluginDir | ForEach-Object {
+            $rel = $_.FullName.Substring($pluginDir.Length + 1)
+            $dest = Join-Path $gDir $rel
+            New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
+            Copy-Item -LiteralPath $_.FullName -Destination $dest -Force
+        }
+        # generation.json (registry meta)
+        [IO.File]::WriteAllText((Join-Path $gRoot 'generation.json'),
+            "{`"pluginName`": `"$pluginName`", `"version`": `"$pluginVersion`"}" + [Environment]::NewLine)
     }
-    # layer 2: generation.json
-    [IO.File]::WriteAllText((Join-Path $genRoot 'generation.json'),
-        "{`"pluginName`": `"$pluginName`", `"version`": `"$pluginVersion`"}" + [Environment]::NewLine)
-    # layer 3: desired.json row (idempotent append)
+    # desired.json row (idempotent append) — protects both trees from sweeps
     $desired = @()
     if (Test-Path -LiteralPath $desiredPath) {
         $desired = @(Get-Content -LiteralPath $desiredPath -Raw | ConvertFrom-Json)
@@ -145,6 +168,14 @@ if ($Execute) {
     if ($desired -notcontains $genDirName) {
         $desired += $genDirName
         $desired | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $desiredPath -Encoding utf8
+    }
+    # supersede: drop the previous generation's desired row (old dirs get
+    # swept by the shell at next boot)
+    $oldRows = @($desired | Where-Object { $_ -like "$pluginName+$pluginVersion+*" -and $_ -ne $genDirName })
+    if ($oldRows.Count -gt 0) {
+        $desired = @($desired | Where-Object { $_ -notin $oldRows })
+        $desired | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $desiredPath -Encoding utf8
+        Say "[do]    superseded desired rows: $($oldRows -join ', ')"
     }
 }
 
